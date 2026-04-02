@@ -6,7 +6,7 @@ function getConfig() {
   const cfg = global.config?.mqttHealthCheck || {};
   return {
     enable:               cfg.enable !== false,
-    silentTimeoutMs:      (cfg.silentTimeoutMinutes  || 10) * 60 * 1000,
+    silentTimeoutMs:      (cfg.silentTimeoutMinutes  || 5) * 60 * 1000,
     checkIntervalMinMs:   (cfg.checkIntervalMinMinutes || 2) * 60 * 1000,
     checkIntervalMaxMs:   (cfg.checkIntervalMaxMinutes || 5) * 60 * 1000,
     maxRestarts:          cfg.maxRestarts          || 5,
