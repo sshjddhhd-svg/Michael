@@ -1,7 +1,7 @@
 const axios = require("axios");
 
-const GROQ_API_KEY = "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";
-const GROQ_MODEL = "openai/gpt-oss-120b";
+const GROQ_API_KEY = "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";
+const GROQ_MODEL = "qwen/qwen3-32b";
 
 module.exports.config = {
   name: "زاو",
