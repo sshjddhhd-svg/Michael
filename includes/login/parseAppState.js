@@ -3,13 +3,15 @@ const checkLiveCookie = require("./checkLiveCookie");
 const getFbstate = require("./getFbstate");
 
 /**
- * Filters an AppState array down to the essential Facebook session cookies.
+ * Filters an AppState array — keeps ALL cookies so we don't strip
+ * messenger.com / m.facebook.com tokens that some API calls require.
+ * Only strips obviously invalid entries (no key or no value).
  */
 function filterKeysAppState(appState) {
-  const ESSENTIAL = ["c_user", "xs", "datr", "fr", "sb", "i_user"];
-  const filtered = appState.filter(c => ESSENTIAL.includes(c.key));
-  // If filtering removes everything (unusual format), return the full array
-  return filtered.length > 0 ? filtered : appState;
+  // Keep everything — the FCA sets cookies for all domains it needs.
+  // Previously this stripped down to 6 keys which broke several API
+  // features when using cookie-based login.
+  return appState.filter(c => c.key && c.value && c.key !== "x-referer");
 }
 
 function isNetscapeCookie(str) {
@@ -38,7 +40,10 @@ function netscapeToAppState(raw) {
 
 function normaliseAppStateArray(arr) {
   if (arr.some(c => c.name)) {
-    arr = arr.map(c => { c.key = c.name; delete c.name; return c; });
+    arr = arr.map(c => {
+      if (c.name && !c.key) { c.key = c.name; delete c.name; }
+      return c;
+    });
   }
   return arr
     .map(c => ({
@@ -53,7 +58,7 @@ function normaliseAppStateArray(arr) {
 }
 
 /**
- * Reads and parses the AppState from ZAO-STATE.json (or a custom path).
+ * Reads and parses the AppState from a given file path.
  *
  * Validation is ADVISORY — if the live-cookie check returns false the
  * parsed array is still returned so the FCA library can make its own
@@ -63,12 +68,10 @@ function normaliseAppStateArray(arr) {
  * @param {string} appStatePath
  * @param {string} [userAgent]
  * @returns {Promise<{appState: Array, confident: boolean}|null>}
- *   null  = file missing / unreadable / empty / parse error
- *   object with appState array and confident=true/false
  */
 module.exports = async function parseAppState(appStatePath, userAgent) {
   if (!existsSync(appStatePath)) {
-    console.log("[ Login ]: AppState file not found — skipping cookie login.");
+    console.log(`[ Login ]: AppState file not found (${appStatePath}) — skipping.`);
     return null;
   }
 
@@ -76,12 +79,12 @@ module.exports = async function parseAppState(appStatePath, userAgent) {
   try {
     raw = readFileSync(appStatePath, "utf-8").trim();
   } catch (e) {
-    console.error(`[ Login ]: Could not read AppState file: ${e.message}`);
+    console.error(`[ Login ]: Could not read AppState file ${appStatePath}: ${e.message}`);
     return null;
   }
 
   if (!raw) {
-    console.log("[ Login ]: AppState file is empty.");
+    console.log(`[ Login ]: AppState file is empty (${appStatePath}).`);
     return null;
   }
 
@@ -149,6 +152,13 @@ module.exports = async function parseAppState(appStatePath, userAgent) {
       return null;
     }
 
+    // Ensure essential cookies are present
+    const hasUser = appState.some(c => c.key === "c_user" || c.key === "i_user");
+    const hasXs   = appState.some(c => c.key === "xs");
+    if (!hasUser || !hasXs) {
+      console.warn("[ Login ]: AppState is missing c_user or xs — may fail.");
+    }
+
     // ── Advisory validation — does NOT block the login attempt ──────
     console.log("[ Login ]: Validating cookie against Facebook...");
     const cookieStr = appState.map(c => `${c.key}=${c.value}`).join("; ");
@@ -161,7 +171,6 @@ module.exports = async function parseAppState(appStatePath, userAgent) {
       console.warn("[ Login ]: Cookie validation FAILED — session appears dead. Passing to FCA for final check...");
       return { appState: filterKeysAppState(appState), confident: false };
     } else {
-      // null = uncertain (network error, 404, etc.) — don't reject the cookie
       console.warn("[ Login ]: Cookie validation UNCERTAIN (network issue) — passing to FCA for final check...");
       return { appState: filterKeysAppState(appState), confident: false };
     }

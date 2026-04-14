@@ -1,22 +1,35 @@
 module.exports.config = {
- name: "0antiout_0",
- eventType: ["log:unsubscribe"],
- version: "0.0.1",
- credits: "DungUwU",
- description: "Listen events"
+  name: "0antiout_0",
+  eventType: ["log:unsubscribe"],
+  version: "1.0.0",
+  credits: "DungUwU",
+  description: "منع الخروج من المجموعة — يعمل فقط عند التفعيل"
 };
 
-module.exports.run = async({ event, api, Threads, Users }) => {
- let data = (await Threads.getData(event.threadID)).data || {};
- if (data.antiout == false) return;
- if (event.logMessageData.leftParticipantFbId == api.getCurrentUserID()) return;
- const name = global.data.userName.get(event.logMessageData.leftParticipantFbId) || await Users.getNameUser(event.logMessageData.leftParticipantFbId);
- const type = (event.author == event.logMessageData.leftParticipantFbId) ? "self-separation" : "being kicked by the administrator";
- if (type == "self-separation") {
-  api.addUserToGroup(event.logMessageData.leftParticipantFbId, event.threadID, (error, info) => {
-   if (error) {
-    api.sendMessage(`https://www.raed.net/img?id=869907`, event.threadID)
-   } else api.sendMessage(`🩸 ${name} 🩸\n\n  يـمـنـع الـهـروب فـي حـضـور هـذا الـسـيـد الـشـاب 😈🔥`, event.threadID);
-  })
- }
-                            }
+module.exports.run = async ({ event, api, Threads, Users }) => {
+  let threadRow = await Threads.getData(event.threadID);
+  let data = (threadRow && threadRow.data) || {};
+
+  if (data.antiout !== true) return;
+
+  if (event.logMessageData.leftParticipantFbId == api.getCurrentUserID()) return;
+
+  const leftID = event.logMessageData.leftParticipantFbId;
+  const name = (global.data && global.data.userName && global.data.userName.get(leftID))
+    || await Users.getNameUser(leftID);
+
+  const type = (event.author == leftID) ? "self-separation" : "kicked";
+
+  if (type === "self-separation") {
+    api.addUserToGroup(leftID, event.threadID, (error) => {
+      if (error) {
+        api.sendMessage(`https://www.raed.net/img?id=869907`, event.threadID);
+      } else {
+        api.sendMessage(
+          `🩸 ${name} 🩸\n\n  يـمـنـع الـهـروب فـي حـضـور هـذا الـسـيـد الـشـاب 😈🔥`,
+          event.threadID
+        );
+      }
+    });
+  }
+};

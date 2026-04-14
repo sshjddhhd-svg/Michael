@@ -46,6 +46,7 @@ module.exports = function({ api, models, globalData, usersData, threadsData }) {
   
         
   
+
 (async function () {
  try {
     
@@ -121,15 +122,33 @@ module.exports = function({ api, models, globalData, usersData, threadsData }) {
     },
   ]);
 
-
-
-
-        
   // Initialize stealth engine globally so commands can access it
   try {
     const { globalStealthEngine } = require('./stealthEngine');
     global._stealthEngine = globalStealthEngine;
   } catch (_) {}
+
+  // ── Shared context object passed to all handler factories ────
+  // The message helper is event-specific (uses event.threadID for replies),
+  // so it must be created per-event. However, we pre-build the handler
+  // factories once so they don't re-require modules on every message.
+  const handlerCtx = { api, models, Users, Threads, Currencies, globalData, usersData, threadsData };
+
+  // ── Cooldown map cleanup — runs every 30 minutes ─────────────
+  // Prevents unbounded memory growth as more users interact over time.
+  setInterval(() => {
+    try {
+      const { cooldowns } = global.client;
+      if (!cooldowns) return;
+      const now = Date.now();
+      for (const [cmdName, timestamps] of cooldowns.entries()) {
+        for (const [userID, ts] of timestamps.entries()) {
+          if (now - ts > 60 * 60 * 1000) timestamps.delete(userID);
+        }
+        if (timestamps.size === 0) cooldowns.delete(cmdName);
+      }
+    } catch (_) {}
+  }, 30 * 60 * 1000);
 
         return (event) => {
   // Raw entry-point trace — catches everything before any processing
@@ -164,13 +183,14 @@ module.exports = function({ api, models, globalData, usersData, threadsData }) {
 
   try {
     const message = Messages(api, event);
+    const ctx = Object.assign({ message }, handlerCtx);
     const handlers = {
-      command: handleCommand({ api, models, Users, Threads, Currencies, globalData, usersData, threadsData, message }),
-      commandEvent: handleCommandEvent({ api, models, Users, Threads, Currencies, globalData, usersData, threadsData, message }),
-      reply: handleReply({ api, models, Users, Threads, Currencies, globalData, usersData, threadsData, message }),
-      reaction: handleReaction({ api, models, Users, Threads, Currencies, globalData, usersData, threadsData, message }),
-      event: handleEvent({ api, models, Users, Threads, Currencies, globalData, usersData, threadsData, message }),
-      database: handleCreateDatabase({ api, Threads, Users, Currencies, models, globalData, usersData, threadsData })
+      command:      handleCommand(ctx),
+      commandEvent: handleCommandEvent(ctx),
+      reply:        handleReply(ctx),
+      reaction:     handleReaction(ctx),
+      event:        handleEvent(ctx),
+      database:     handleCreateDatabase(ctx)
     };
     
     switch (event.type) {

@@ -1,14 +1,39 @@
-const { login } = require("../fcaClient");
-const fs = require("fs-extra");
-const path = require("path");
+"use strict";
 
-const COOLDOWN_MS    = 3 * 60 * 1000;
-const MAX_RETRIES    = 3;
-const RESTART_DELAY  = 3000;
+/**
+ * ZAO Auto Re-Login
+ * ==================
+ * When the session expires this module tries to re-establish it.
+ * It is multi-account-aware: it tries the same tier that is currently
+ * active first (refreshing cookies), then advances to the next tier
+ * if the current one is permanently dead.
+ *
+ * Tier order: 1 → 2 → 3
+ *   Tier 1: ZAO-STATE.json / alt.json      (+ email/password fallback)
+ *   Tier 2: ZAO-STATEX.json / altx.json
+ *   Tier 3: ZAO-STATEV.json / altv.json
+ */
 
-let lastAttempt  = 0;
-let retryCount   = 0;
-let isAttempting = false;
+const { loginAsync } = require("../fcaClient");
+const fs             = require("fs-extra");
+const path           = require("path");
+const parseAppState  = require("./parseAppState");
+const { patchCookieApi } = require("../zaoCookiePatcher");
+
+const COOLDOWN_MS   = 3  * 60 * 1000;  // 3 minutes between attempts
+const MAX_RETRIES   = 4;               // per tier
+const RESTART_DELAY = 3000;
+
+const TIERS = [
+  { tier: 1, stateFile: "ZAO-STATE.json",  altFile: "alt.json",  credsFile: "ZAO-STATEC.json"  },
+  { tier: 2, stateFile: "ZAO-STATEX.json", altFile: "altx.json", credsFile: "ZAO-STATEXC.json" },
+  { tier: 3, stateFile: "ZAO-STATEV.json", altFile: "altv.json", credsFile: "ZAO-STATEVC.json" },
+];
+
+let lastAttempt   = 0;
+let retryCount    = 0;
+let isAttempting  = false;
+let currentTierIdx = 0;  // index into TIERS[]
 
 function log(level, msg) {
   try {
@@ -20,7 +45,7 @@ function log(level, msg) {
       ]);
       return;
     }
-  } catch (e) {}
+  } catch (_) {}
   console[level === "error" ? "error" : "log"]("[RELOGIN]", msg);
 }
 
@@ -32,20 +57,197 @@ function notifyAdmins(api, message) {
       if (!id) continue;
       api.sendMessage(message, id).catch(() => {});
     }
-  } catch (e) {}
+  } catch (_) {}
+}
+
+function buildLoginOptions() {
+  return Object.assign({
+    autoReconnect: true,
+    listenEvents: true,
+    autoMarkRead: true,
+    simulateTyping: true,
+    randomUserAgent: false,
+    persona: "desktop",
+    maxConcurrentRequests: 5,
+    maxRequestsPerMinute: 50,
+    requestCooldownMs: 60000,
+    errorCacheTtlMs: 300000,
+  }, global.config?.FCAOption || {});
+}
+
+function saveState(stateFile, altFile, appState) {
+  try {
+    const data = JSON.stringify(appState, null, 2);
+    fs.writeFileSync(stateFile, data, "utf-8");
+    if (altFile && fs.existsSync(path.dirname(altFile))) {
+      fs.writeFileSync(altFile, data, "utf-8");
+    }
+  } catch (_) {}
+}
+
+function readCredsFile(credsFullPath) {
+  try {
+    if (!fs.existsSync(credsFullPath)) return null;
+    const data = JSON.parse(fs.readFileSync(credsFullPath, "utf-8").trim());
+    if (data && data.email && data.password) return { email: data.email, password: data.password };
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function tryTierLogin(tierInfo, api) {
+  const cwd  = process.cwd();
+  const opts = buildLoginOptions();
+  const ua   = opts.userAgent || global.config?.FCAOption?.userAgent;
+
+  const stateFullPath = path.join(cwd, tierInfo.stateFile);
+  const altFullPath   = path.join(cwd, tierInfo.altFile);
+  const credsFullPath = path.join(cwd, tierInfo.credsFile);
+
+  // ── 1. Try main state file ──────────────────────────────────────
+  let parsed = await parseAppState(stateFullPath, ua);
+  if (parsed && Array.isArray(parsed.appState) && parsed.appState.length > 0) {
+    try {
+      const newApi = await loginAsync({ appState: parsed.appState }, opts);
+      const uid    = newApi && newApi.getCurrentUserID ? newApi.getCurrentUserID() : null;
+      if (uid && uid !== "0") return { newApi, stateFullPath, altFullPath };
+    } catch (_) {}
+  }
+
+  // ── 2. Try alt file ─────────────────────────────────────────────
+  if (fs.existsSync(altFullPath)) {
+    parsed = await parseAppState(altFullPath, ua);
+    if (parsed && Array.isArray(parsed.appState) && parsed.appState.length > 0) {
+      try {
+        const newApi = await loginAsync({ appState: parsed.appState }, opts);
+        const uid    = newApi && newApi.getCurrentUserID ? newApi.getCurrentUserID() : null;
+        if (uid && uid !== "0") return { newApi, stateFullPath, altFullPath };
+      } catch (_) {}
+    }
+  }
+
+  // ── 3. Try creds file for this tier ─────────────────────────────
+  const fileCreds = readCredsFile(credsFullPath);
+  if (fileCreds) {
+    try {
+      const newApi = await loginAsync({ email: fileCreds.email, password: fileCreds.password }, opts);
+      const uid    = newApi && newApi.getCurrentUserID ? newApi.getCurrentUserID() : null;
+      if (uid && uid !== "0") return { newApi, stateFullPath, altFullPath };
+    } catch (_) {}
+  }
+
+  // ── 4. Config/env credentials (Tier 1 only, no creds file present) ─
+  if (tierInfo.tier === 1 && !fileCreds) {
+    const email    = process.env.FB_EMAIL    || global.config?.EMAIL;
+    const password = process.env.FB_PASSWORD || global.config?.PASSWORD;
+    if (email && password) {
+      try {
+        const newApi = await loginAsync({ email, password }, opts);
+        const uid    = newApi && newApi.getCurrentUserID ? newApi.getCurrentUserID() : null;
+        if (uid && uid !== "0") return { newApi, stateFullPath, altFullPath };
+      } catch (_) {}
+    }
+  }
+
+  return null;
 }
 
 /**
- * Attempts to re-authenticate with Facebook and restart the bot.
- * Features:
- *   - Cooldown: will not attempt more than once per 3 minutes
- *   - Max retries: stops after 3 failed attempts and notifies admins
- *   - On success: saves new AppState to ZAO-STATE.json & alt.json, then restarts
+ * Immediately skip the current tier and attempt the next one.
+ * Called by the AccountHealthMonitor when send failures are confirmed.
+ * Bypasses the normal cooldown/retry-count gate.
  *
- * @param {object} api - Current FCA API instance (used to notify admins)
- * @returns {Promise<boolean>} true if re-login succeeded, false otherwise
+ * @param {object} api    - Current (possibly dead) FCA API instance
+ * @param {string} reason - Why the forced switch was requested
  */
-module.exports = async function autoRelogin(api, reason) {
+async function forceTierSwitch(api, reason) {
+  if (isAttempting) {
+    log("warn", "forceTierSwitch: re-login already in progress — skipping.");
+    return false;
+  }
+
+  // Resolve which tier we're on right now
+  const activeTier = global.activeAccountTier || 1;
+  let idx = TIERS.findIndex(t => t.tier === activeTier);
+  if (idx === -1) idx = 0;
+
+  // Advance to next tier
+  const nextIdx = idx + 1;
+  if (nextIdx >= TIERS.length) {
+    log("error", "forceTierSwitch: all tiers exhausted — cannot switch further.");
+    notifyAdmins(api,
+      `⛔ HEALTH MONITOR: all ${TIERS.length} account tiers have been tried.\n` +
+      `Please upload fresh cookie files via the panel.\n` +
+      `Reason: ${reason || "send failures"}`
+    );
+    return false;
+  }
+
+  currentTierIdx = nextIdx;
+  retryCount     = 0;
+  lastAttempt    = 0;  // bypass cooldown — health monitor already waited
+  isAttempting   = true;
+
+  const tierInfo = TIERS[currentTierIdx];
+  log("warn", `forceTierSwitch → Tier ${tierInfo.tier} (${tierInfo.stateFile}) | reason: ${reason || "send failures"}`);
+  notifyAdmins(api,
+    `🔄 ACCOUNT HEALTH MONITOR\n\n` +
+    `Switching to Tier ${tierInfo.tier} due to send failures.\n` +
+    `Reason: ${reason || "consecutive message send failures"}`
+  );
+
+  let loginResult = null;
+  try {
+    loginResult = await tryTierLogin(tierInfo, api);
+  } catch (e) {
+    log("error", `forceTierSwitch: login threw: ${e.message}`);
+  }
+
+  isAttempting = false;
+
+  if (!loginResult) {
+    log("error", `forceTierSwitch: Tier ${tierInfo.tier} login failed — trying next tier if available.`);
+    notifyAdmins(api, `❌ HEALTH MONITOR: Tier ${tierInfo.tier} also failed.`);
+    // Try the tier after that on next call
+    retryCount = MAX_RETRIES;
+    return false;
+  }
+
+  const { newApi, stateFullPath, altFullPath } = loginResult;
+  try {
+    const freshState = newApi.getAppState ? newApi.getAppState() : [];
+    saveState(stateFullPath, altFullPath, freshState);
+    retryCount               = 0;
+    global.activeAccountTier = tierInfo.tier;
+    global.activeStateFile   = stateFullPath;
+    global.activeAltFile     = altFullPath;
+    global.loginMethod       = "appstate";
+    patchCookieApi(newApi, {
+      tier:        tierInfo.tier,
+      stateFile:   stateFullPath,
+      altFile:     altFullPath,
+      loginMethod: "appstate"
+    });
+    try { require("./statePersist").save(); } catch (_) {}
+    log("info", `forceTierSwitch: success — Tier ${tierInfo.tier}. Restarting in ${RESTART_DELAY / 1000}s...`);
+    notifyAdmins(api,
+      `✅ HEALTH MONITOR: switched to Tier ${tierInfo.tier} successfully.\nBot restarting...`
+    );
+    setTimeout(() => process.exit(0), RESTART_DELAY);
+    return true;
+  } catch (saveErr) {
+    log("error", `forceTierSwitch: login ok but could not save cookies: ${saveErr.message}`);
+    return false;
+  }
+};
+
+/**
+ * Main re-login entry point.
+ * @param {object} api    - Current (possibly dead) FCA API instance
+ * @param {string} reason - Why re-login was triggered
+ */
+async function autoRelogin(api, reason) {
   const now = Date.now();
 
   if (isAttempting) {
@@ -55,90 +257,105 @@ module.exports = async function autoRelogin(api, reason) {
 
   if (now - lastAttempt < COOLDOWN_MS) {
     const waitSec = Math.ceil((COOLDOWN_MS - (now - lastAttempt)) / 1000);
-    log("warn", `Cooldown active. Next attempt allowed in ${waitSec}s.`);
+    log("warn", `Cooldown active. Next attempt in ${waitSec}s.`);
     return false;
   }
+
+  // Sync current tier index from global state
+  const activeTier = global.activeAccountTier || 1;
+  currentTierIdx   = TIERS.findIndex(t => t.tier === activeTier);
+  if (currentTierIdx === -1) currentTierIdx = 0;
 
   if (retryCount >= MAX_RETRIES) {
-    log("error", `Max retries (${MAX_RETRIES}) reached. Manual intervention required.`);
-    notifyAdmins(
-      api,
-      `⛔ AUTO RELOGIN FAILED\n\n` +
-      `Tried ${MAX_RETRIES} times — all failed.\n` +
-      `Please update ZAO-STATE.json manually with fresh cookies.`
-    );
-    return false;
-  }
-
-  const email    = process.env.FB_EMAIL    || global.config?.EMAIL;
-  const password = process.env.FB_PASSWORD || global.config?.PASSWORD;
-
-  if (!email || !password) {
-    log("error", "No EMAIL/PASSWORD in ZAO-SETTINGS.json. Cannot auto re-login.");
-    notifyAdmins(
-      api,
-      `⚠️ SESSION EXPIRED — AUTO RELOGIN SKIPPED\n\n` +
-      `No email/password saved in ZAO-SETTINGS.json.\n` +
-      `Please add EMAIL and PASSWORD fields to re-enable auto re-login.`
-    );
-    return false;
+    // This tier is exhausted — advance to the next one
+    if (currentTierIdx + 1 < TIERS.length) {
+      currentTierIdx++;
+      retryCount = 0;
+      log("warn", `Tier ${activeTier} exhausted. Advancing to Tier ${TIERS[currentTierIdx].tier}...`);
+    } else {
+      log("error", `All ${TIERS.length} account tiers exhausted. Manual intervention required.`);
+      notifyAdmins(
+        api,
+        `⛔ ALL ACCOUNT TIERS FAILED\n\n` +
+        `Tried all ${TIERS.length} tiers — none could login.\n` +
+        `Please update cookie files via the panel.`
+      );
+      return false;
+    }
   }
 
   isAttempting = true;
   lastAttempt  = now;
   retryCount++;
 
-  const reasonMsg = reason ? ` | reason=${String(reason && (reason.message || reason.error || reason)).slice(0, 180)}` : "";
-  log("info", `Attempting re-login (attempt ${retryCount}/${MAX_RETRIES}) for: ${email}${reasonMsg}`);
+  const tierInfo   = TIERS[currentTierIdx];
+  const reasonMsg  = reason
+    ? ` | reason=${String(reason && (reason.message || reason.error || reason)).slice(0, 180)}`
+    : "";
+
+  log("info", `Re-login attempt ${retryCount}/${MAX_RETRIES} — Tier ${tierInfo.tier} (${tierInfo.stateFile})${reasonMsg}`);
   notifyAdmins(
     api,
-    `🔄 SESSION EXPIRED — Attempting auto re-login...\nAttempt ${retryCount}/${MAX_RETRIES}${reasonMsg ? `\n${reasonMsg}` : ""}`
+    `🔄 SESSION EXPIRED — Attempting auto re-login...\n` +
+    `Tier ${tierInfo.tier} | Attempt ${retryCount}/${MAX_RETRIES}` +
+    (reasonMsg ? `\n${reasonMsg}` : "")
   );
 
-  return new Promise(resolve => {
-    login({ email, password }, {}, async (err, newApi) => {
-      isAttempting = false;
+  let loginResult = null;
+  try {
+    loginResult = await tryTierLogin(tierInfo, api);
+  } catch (e) {
+    log("error", `Re-login threw error: ${e.message}`);
+  }
 
-      if (err) {
-        const errMsg = err?.error || err?.message || String(err);
-        log("error", `Re-login failed: ${errMsg}`);
-        notifyAdmins(
-          api,
-          `❌ AUTO RELOGIN FAILED (attempt ${retryCount}/${MAX_RETRIES})\nReason: ${errMsg}`
-        );
-        resolve(false);
-        return;
-      }
+  isAttempting = false;
 
-      try {
-        const newAppState = newApi.getAppState();
-        const statePath   = path.join(process.cwd(), global.config?.APPSTATEPATH || "ZAO-STATE.json");
-        const altPath     = path.join(process.cwd(), "alt.json");
+  if (!loginResult) {
+    log("error", `Re-login failed for Tier ${tierInfo.tier}.`);
+    notifyAdmins(
+      api,
+      `❌ AUTO RELOGIN FAILED (Tier ${tierInfo.tier} attempt ${retryCount}/${MAX_RETRIES})`
+    );
+    return false;
+  }
 
-        fs.writeFileSync(statePath, JSON.stringify(newAppState, null, 2), "utf-8");
-        fs.writeFileSync(altPath,   JSON.stringify(newAppState, null, 2), "utf-8");
+  const { newApi, stateFullPath, altFullPath } = loginResult;
 
-        retryCount = 0;
+  try {
+    const freshState = newApi.getAppState ? newApi.getAppState() : [];
+    saveState(stateFullPath, altFullPath, freshState);
 
-        // ── Save pending callbacks so active commands survive the restart ──
-        try {
-          require("./statePersist").save();
-        } catch (_) {}
+    retryCount                = 0;
+    global.activeAccountTier  = tierInfo.tier;
+    global.activeStateFile    = stateFullPath;
+    global.activeAltFile      = altFullPath;
+    global.loginMethod        = "appstate";
 
-        log("info", `New AppState saved to ${path.basename(statePath)} & alt.json. Restarting in ${RESTART_DELAY / 1000}s...`);
-        notifyAdmins(
-          api,
-          `✅ AUTO RELOGIN SUCCESS\n\nNew session saved. Bot is restarting now...`
-        );
-
-        resolve(true);
-        setTimeout(() => process.exit(0), RESTART_DELAY);
-
-      } catch (saveErr) {
-        log("error", `Re-login succeeded but failed to save new AppState: ${saveErr.message}`);
-        notifyAdmins(api, `❌ Re-login succeeded but failed to save: ${saveErr.message}`);
-        resolve(false);
-      }
+    patchCookieApi(newApi, {
+      tier:        tierInfo.tier,
+      stateFile:   stateFullPath,
+      altFile:     altFullPath,
+      loginMethod: "appstate"
     });
-  });
-};
+
+    // Persist any pending callbacks before restart
+    try { require("./statePersist").save(); } catch (_) {}
+
+    log("info", `Re-login success — Tier ${tierInfo.tier}. Restarting in ${RESTART_DELAY / 1000}s...`);
+    notifyAdmins(
+      api,
+      `✅ AUTO RELOGIN SUCCESS\n\nTier ${tierInfo.tier} session restored. Bot is restarting...`
+    );
+
+    setTimeout(() => process.exit(0), RESTART_DELAY);
+    return true;
+
+  } catch (saveErr) {
+    log("error", `Re-login succeeded but could not save cookies: ${saveErr.message}`);
+    notifyAdmins(api, `❌ Re-login succeeded but failed to save: ${saveErr.message}`);
+    return false;
+  }
+}
+
+module.exports                   = autoRelogin;
+module.exports.forceTierSwitch   = forceTierSwitch;

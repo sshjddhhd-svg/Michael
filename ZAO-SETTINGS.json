@@ -137,6 +137,15 @@
         "sqliteCacheFile": "cache/nkx-cache.json"
     },
 
+    "e2ee": {
+        "enabled": false,
+        "autoEncryptDMs": true,
+        "autoDecryptIncoming": true,
+        "keyFile": "data/e2ee-keys.json",
+        "announcePublicKey": true,
+        "_note": "X25519 ECDH + HKDF + AES-256-GCM end-to-end encryption. Set nkxModern.enableE2EE=true to activate. autoEncryptDMs encrypts outgoing messages when a peer key is registered. autoDecryptIncoming transparently decrypts .NKX-E2EE| messages before commands see them. keyFile stores the bot key pair and all peer keys across restarts."
+    },
+
     "stealthMode": {
         "enabled": true,
         "nightModeStart": 1,

@@ -46,6 +46,23 @@ module.exports = function modernizeNkxApi(api) {
   if (!api || api.__nkxModernized) return api;
   const log = createLogger();
   const cfg = getCfg();
+
+  // Apply the cookie patcher if it hasn't been applied yet.
+  // (Normally called in Emalogin, but this is a safety net.)
+  if (!api.__zaoCookiePatched) {
+    try {
+      const { patchCookieApi } = require("./zaoCookiePatcher");
+      patchCookieApi(api, {
+        tier: global.activeAccountTier || 1,
+        stateFile: global.activeStateFile,
+        altFile: global.activeAltFile,
+        loginMethod: global.loginMethod || "unknown"
+      });
+    } catch (e) {
+      log("Cookie patcher unavailable: " + (e.message || e), "yellow");
+    }
+  }
+
   if (!cfg.enabled) return api;
 
   const timers = [];
@@ -303,7 +320,68 @@ module.exports = function modernizeNkxApi(api) {
   if (cfg.enableE2EE && api.e2ee && typeof api.e2ee.enable === "function") {
     try {
       api.e2ee.enable();
-      log("E2EE enabled globally for DM flows.", "green");
+
+      // ── Load persisted key pair + peer keys ──────────────────
+      const keyManager = (() => {
+        try { return require("./e2ee/keyManager"); } catch (_) { return null; }
+      })();
+      if (keyManager) keyManager.load(api);
+
+      // ── If bot has no key pair yet, generate one and save it ─
+      if (!api.e2ee.getPublicKey) {
+        log("E2EE: getPublicKey not available — skipping key init.", "yellow");
+      } else {
+        try {
+          api.e2ee.getPublicKey();
+          if (keyManager) keyManager.save(api);
+          log("E2EE key pair ready. Bot public key: " + api.e2ee.getPublicKey().slice(0, 20) + "…", "green");
+        } catch (e) {
+          log("E2EE key init warning: " + (e.message || e), "yellow");
+        }
+      }
+
+      // ── Auto-encrypt outgoing messages ────────────────────────
+      if (original.sendMessage) {
+        const _origSend = api.sendMessage.bind(api);
+        api.sendMessage = function e2eeSendMessage(form, threadID, callback, replyToMessage) {
+          let encryptedForm = form;
+          try {
+            const e2eeCfg = global.config?.e2ee || {};
+            if (e2eeCfg.autoEncryptDMs !== false && api.e2ee.isEnabled() && api.e2ee.hasPeer(threadID)) {
+              if (typeof form === "string") {
+                encryptedForm = api.e2ee.encrypt(threadID, form);
+              } else if (form && typeof form === "object" && typeof form.body === "string") {
+                encryptedForm = Object.assign({}, form, { body: api.e2ee.encrypt(threadID, form.body) });
+              }
+            }
+          } catch (encErr) {
+            log("E2EE encrypt skipped: " + (encErr.message || encErr), "yellow");
+          }
+          return _origSend(encryptedForm, threadID, callback, replyToMessage);
+        };
+      }
+
+      // ── Auto-decrypt incoming messages ────────────────────────
+      if (original.listenMqtt) {
+        const _origListenMqtt = api.listenMqtt.bind(api);
+        api.listenMqtt = function e2eeListenMqtt(handler) {
+          const decryptingHandler = (err, event) => {
+            if (!err && event && typeof event.body === "string" && event.body.startsWith(".NKX-E2EE|")) {
+              try {
+                const e2eeCfg = global.config?.e2ee || {};
+                if (e2eeCfg.autoDecryptIncoming !== false && api.e2ee.isEnabled()) {
+                  const plain = api.e2ee.decrypt(event.threadID, event.body);
+                  if (plain !== null) event.body = plain;
+                }
+              } catch (_) {}
+            }
+            return handler(err, event);
+          };
+          return _origListenMqtt(decryptingHandler);
+        };
+      }
+
+      log("E2EE enabled: auto-encrypt outgoing ✓ auto-decrypt incoming ✓", "green");
     } catch (e) {
       log("E2EE enable failed: " + (e.message || e), "yellow");
     }

@@ -592,9 +592,51 @@ async function onBot({ models }) {
   global['_botApi']       = _api;
   global['_botStartTime'] = Date.now();
 
+  // ── Account Health Monitor ─────────────────────────────────
+  try {
+    const accountHealthMonitor = require('./includes/login/accountHealthMonitor');
+    accountHealthMonitor.start(_api);
+  } catch (_healthErr) {
+    logger.log([
+      { message: '[ HEALTH ]: ', color: ['red', 'cyan'] },
+      { message: 'Health monitor failed to start: ' + (_healthErr.message || _healthErr), color: 'yellow' }
+    ]);
+  }
+
   // ══════════════════════════════════════════════════════════
   //  Internal Panel API Server — port 3001 (localhost only)
   // ══════════════════════════════════════════════════════════
+  // ── Motor state persistence helpers ──────────────────────────
+  const _motorFile = require('path').join(process.cwd(), 'data', 'motor-state.json');
+  function _saveMotorState() {
+    try {
+      require('fs-extra').ensureDirSync(require('path').dirname(_motorFile));
+      const out = {};
+      for (const [tid, d] of Object.entries(global['motorData'] || {})) {
+        out[tid] = { status: d.status, message: d.message, time: d.time };
+      }
+      require('fs').writeFileSync(_motorFile, JSON.stringify(out, null, 2), 'utf8');
+    } catch (_) {}
+  }
+  // Restore persisted motor state and restart active intervals
+  try {
+    require('fs-extra').ensureDirSync(require('path').dirname(_motorFile));
+    if (require('fs').existsSync(_motorFile)) {
+      const _saved = JSON.parse(require('fs').readFileSync(_motorFile, 'utf8'));
+      global['motorData'] = global['motorData'] || {};
+      for (const [tid, d] of Object.entries(_saved)) {
+        global['motorData'][tid] = { status: d.status || false, message: d.message || null, time: d.time || null, interval: null };
+        if (d.status && d.message && d.time && d.time >= 5000) {
+          const _tid = tid, _d = global['motorData'][tid];
+          _d.interval = setInterval(() => { if (_api) _api.sendMessage(_d.message, _tid).catch(() => {}); }, _d.time);
+          logger.log([{ message: '[ MOTOR ]: ', color: ['red', 'cyan'] }, { message: `Restored motor for ${_tid} (every ${_d.time / 1000}s)`, color: 'white' }]);
+        }
+      }
+    }
+  } catch (_e) {
+    logger.log([{ message: '[ MOTOR ]: ', color: ['red', 'cyan'] }, { message: 'Could not restore motor state: ' + (_e.message || _e), color: 'yellow' }]);
+  }
+
   (function startPanelApi() {
     const _panelHttp = require('http');
     const _panelPath = require('path');
@@ -765,19 +807,21 @@ async function onBot({ models }) {
           global['motorData'] = global['motorData'] || {};
           if (!global['motorData'][tid]) global['motorData'][tid] = { status: false, message: null, time: null, interval: null };
           const d = global['motorData'][tid];
-          if (action === 'set-message') { d.message = message; return _json(res, { ok: true }); }
-          if (action === 'set-time')    { d.time = parseInt(time); return _json(res, { ok: true }); }
+          if (action === 'set-message') { d.message = message; _saveMotorState(); return _json(res, { ok: true }); }
+          if (action === 'set-time')    { d.time = parseInt(time); _saveMotorState(); return _json(res, { ok: true }); }
           if (action === 'activate') {
             if (d.status) return _json(res, { error: 'Already active' }, 400);
             if (!d.message) return _json(res, { error: 'No message set' }, 400);
             if (!d.time || d.time < 5000) return _json(res, { error: 'Set time first (min 5s)' }, 400);
             d.status = true;
             d.interval = setInterval(() => { if (_api) _api.sendMessage(d.message, tid).catch(() => {}); }, d.time);
+            _saveMotorState();
             return _json(res, { ok: true });
           }
           if (action === 'deactivate') {
             if (d.interval) clearInterval(d.interval);
             d.status = false; d.interval = null;
+            _saveMotorState();
             return _json(res, { ok: true });
           }
           return _json(res, { status: d.status, message: d.message, time: d.time });
@@ -791,8 +835,21 @@ async function onBot({ models }) {
           global['lastActivity'] = global['lastActivity'] || {};
           if (!global['motorData2'][tid]) global['motorData2'][tid] = { status: false, message: null, time: null, interval: null };
           const d = global['motorData2'][tid];
-          if (action === 'set-message') { d.message = message; return _json(res, { ok: true }); }
-          if (action === 'set-time')    { d.time = parseInt(time); return _json(res, { ok: true }); }
+          // Motor2 state is also managed by motor2.js command — sync save via its file
+          const _m2File = require('path').join(process.cwd(), 'data', 'motor2-state.json');
+          function _saveMotor2State() {
+            try {
+              const _panelFsX = require('fs-extra');
+              _panelFsX.ensureDirSync(require('path').dirname(_m2File));
+              const _out = {};
+              for (const [_tid, _d] of Object.entries(global['motorData2'] || {})) {
+                _out[_tid] = { status: _d.status, message: _d.message, time: _d.time };
+              }
+              require('fs').writeFileSync(_m2File, JSON.stringify(_out, null, 2), 'utf8');
+            } catch (_) {}
+          }
+          if (action === 'set-message') { d.message = message; _saveMotor2State(); return _json(res, { ok: true }); }
+          if (action === 'set-time')    { d.time = parseInt(time); _saveMotor2State(); return _json(res, { ok: true }); }
           if (action === 'activate') {
             if (d.status) return _json(res, { error: 'Already active' }, 400);
             if (!d.message) return _json(res, { error: 'No message set' }, 400);
@@ -806,11 +863,13 @@ async function onBot({ models }) {
                 _api.sendMessage(d.message, tid).catch(() => {});
               }
             }, d.time);
+            _saveMotor2State();
             return _json(res, { ok: true });
           }
           if (action === 'deactivate') {
             if (d.interval) clearInterval(d.interval);
             d.status = false; d.interval = null;
+            _saveMotor2State();
             return _json(res, { ok: true });
           }
           return _json(res, { status: d.status, message: d.message, time: d.time });
@@ -859,6 +918,41 @@ async function onBot({ models }) {
             );
           } catch (_) {}
           return _json(res, { ok: true });
+        }
+
+        if (pathname === '/bot/health' && method === 'GET') {
+          let healthMonitorStatus = { sendFailCount: 0, sendFailWindow: 300000, lastCookieScan: { result: 'pending', ts: null } };
+          try {
+            const _healthMon = require('./includes/login/accountHealthMonitor');
+            if (typeof _healthMon.getStatus === 'function') healthMonitorStatus = _healthMon.getStatus();
+          } catch (_) {}
+
+          const _motorData  = global['motorData']  || {};
+          const _motorData2 = global['motorData2'] || {};
+          const _repeatName = global['repeatName'] || {};
+
+          const activeMotors = [];
+          for (const [tid, d] of Object.entries(_motorData)) {
+            if (d && d.status) activeMotors.push({ threadID: tid, type: 'motor1', message: d.message, intervalMs: d.time });
+          }
+          for (const [tid, d] of Object.entries(_motorData2)) {
+            if (d && d.status) activeMotors.push({ threadID: tid, type: 'motor2', message: d.message, intervalMs: d.time });
+          }
+
+          const activeLocks = [];
+          for (const [tid, entry] of Object.entries(_repeatName)) {
+            if (entry && entry.status === true) activeLocks.push({ threadID: tid, name: entry.name || null });
+          }
+
+          return _json(res, {
+            activeTier:     global['activeAccountTier'] || 1,
+            sendFailCount:  healthMonitorStatus.sendFailCount,
+            sendFailWindow: healthMonitorStatus.sendFailWindow,
+            lastCookieScan: healthMonitorStatus.lastCookieScan,
+            activeMotors,
+            activeLocks,
+            ts: new Date().toISOString()
+          });
         }
 
         res.writeHead(404); res.end('Not found');
@@ -964,6 +1058,7 @@ async function onBot({ models }) {
   logger.log([{ message: '[ PROTECT ]: ', color: ['red', 'cyan'] }, { message: 'Auto-Ping        ✓  random 8-18 min', color: 'white' }]);
   logger.log([{ message: '[ PROTECT ]: ', color: ['red', 'cyan'] }, { message: 'Cookie Save      ✓  every 10 min → ZAO-STATE.json & alt.json', color: 'white' }]);
   logger.log([{ message: '[ PROTECT ]: ', color: ['red', 'cyan'] }, { message: 'Auto-Relogin     ✓  3 attempts / 3-min cooldown (JSON/Token/String/Netscape → Email/Password fallback)', color: 'white' }]);
+  logger.log([{ message: '[ PROTECT ]: ', color: ['red', 'cyan'] }, { message: 'Health-Monitor   ✓  cookie scan every 5 min + send-fail watchdog → auto tier-switch (Tier 1→2→3)', color: 'white' }]);
   logger.log([{ message: '[ PROTECT ]: ', color: ['red', 'cyan'] }, { message: 'Session-Check    ✓  proactive live-cookie validation every 35 min', color: 'white' }]);
   logger.log([{ message: '[ PROTECT ]: ', color: ['red', 'cyan'] }, { message: 'MQTT-Silence     ✓  إعادة تشغيل المستمع إذا صمت > 10 دقائق', color: 'white' }]);
   logger.log([{ message: '[ PROTECT ]: ', color: ['red', 'cyan'] }, { message: 'MQTT-HealthCheck ✓  فحص ذكي مع backoff تصاعدي (من GoatBot)', color: 'white' }]);

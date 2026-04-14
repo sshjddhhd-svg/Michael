@@ -5,7 +5,7 @@ const http       = require('http');
 const fs         = require('fs');
 const path       = require('path');
 
-const PORT          = parseInt(process.env.PORT || '3000', 10);
+const PORT          = parseInt(process.env.PORT || '5000', 10);
 const BOT_API_PORT  = 3001;
 const __dir         = __dirname;
 const ALT_PATH      = path.join(__dir, 'alt.json');
@@ -206,6 +206,32 @@ const server = http.createServer(async (req, res) => {
         }
         return jsonRes(res, cmds);
       } catch (e) { return jsonRes(res, { error: e.message }, 500); }
+    }
+
+    if (pathname === '/api/accounts' && method === 'GET') {
+      const TIER_FILES = [
+        { tier: 1, stateFile: 'ZAO-STATE.json',  altFile: 'alt.json',  credsFile: 'ZAO-STATEC.json'  },
+        { tier: 2, stateFile: 'ZAO-STATEX.json', altFile: 'altx.json', credsFile: 'ZAO-STATEXC.json' },
+        { tier: 3, stateFile: 'ZAO-STATEV.json', altFile: 'altv.json', credsFile: 'ZAO-STATEVC.json' }
+      ];
+      function fileStatus(filename) {
+        const full = path.join(__dir, filename);
+        try {
+          if (!fs.existsSync(full)) return { exists: false, size: 0 };
+          const st = fs.statSync(full);
+          return { exists: true, size: st.size };
+        } catch (_) { return { exists: false, size: 0 }; }
+      }
+      const tiers = TIER_FILES.map(t => ({
+        tier:      t.tier,
+        stateFile: t.stateFile,
+        altFile:   t.altFile,
+        credsFile: t.credsFile,
+        state:     fileStatus(t.stateFile),
+        alt:       fileStatus(t.altFile),
+        creds:     fileStatus(t.credsFile)
+      }));
+      return jsonRes(res, { tiers, activeTier: null, loginMethod: null });
     }
 
     if (pathname.startsWith('/api/bot/')) {

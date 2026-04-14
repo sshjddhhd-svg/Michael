@@ -87,12 +87,16 @@ module.exports = function ({ api, models, Users, Threads, Currencies, globalData
     
     const [matchedPrefix] = body.match(prefixRegex),
       args = body.slice(matchedPrefix.length).trim().split(/ +/);
-    var commandName = args.shift().toLowerCase();
+    var commandName = args.shift();
+    if (!commandName) return;
+    // Lowercase only for ASCII — preserve Arabic/non-Latin characters
+    commandName = commandName.replace(/[a-zA-Z]/g, c => c.toLowerCase());
     var command = commands.get(commandName);
     if (!command) {
       var allCommandName = [];
       const commandValues = commands["keys"]();
       for (const cmd of commandValues) allCommandName.push(cmd);
+      if (allCommandName.length === 0) return;
       const checker = stringSimilarity.findBestMatch(
         commandName,
         allCommandName
@@ -100,7 +104,7 @@ module.exports = function ({ api, models, Users, Threads, Currencies, globalData
       if (checker.bestMatch.rating >= 0.8)
         command = global.client.commands.get(checker.bestMatch.target);
       else
-        return
+        return;
     }
   
     if (commandBanned.get(threadID) || commandBanned.get(senderID)) {

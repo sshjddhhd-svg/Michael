@@ -234,6 +234,10 @@ select option{background:var(--bg3)}
 
       <!-- ACCOUNT -->
       <div class="tab-panel" id="tab-account">
+        <div class="card" id="accounts-status-card">
+          <div class="card-title"><span>📊</span> Account Tiers Status <button class="btn btn-ghost btn-sm" onclick="loadAccountTiers()" style="margin-left:auto;font-size:11px">↺ Refresh</button></div>
+          <div id="accounts-tiers-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px"></div>
+        </div>
         <div class="card">
           <div class="card-title"><span>🔑</span> Facebook Credentials</div>
           <div class="row2">
@@ -422,7 +426,7 @@ document.querySelectorAll('.nav-item').forEach(el => {
     document.getElementById('page-title').textContent = tabTitles[tab] || tab;
     if (tab === 'commands') loadCommands();
     if (tab === 'config')   loadConfig();
-    if (tab === 'account')  loadAccount();
+    if (tab === 'account')  { loadAccount(); loadAccountTiers(); }
     if (tab === 'dashboard') { loadGroups(); loadRequests(); loadGroupStatus(); }
   });
 });
@@ -656,6 +660,36 @@ async function saveAccount() {
       msg.className = 'err'; msg.style.display = 'block'; msg.textContent = '✗ ' + d.error;
     }
   } catch (_) { toast('Failed to save account', 'err'); }
+}
+
+// ─── Account Tiers Status ───────────────────────────────────
+function loadAccountTiers() {
+  const grid = document.getElementById('accounts-tiers-grid');
+  grid.innerHTML = '<span style="color:var(--sub);font-size:12px">Loading…</span>';
+  fetch('/api/accounts').then(r => r.json()).then(data => {
+    const { tiers } = data;
+    grid.innerHTML = '';
+    tiers.forEach(t => {
+      function badge(fileInfo, label) {
+        const exists = fileInfo.exists;
+        const kb = fileInfo.size > 0 ? (fileInfo.size / 1024).toFixed(1) + 'KB' : '—';
+        const color = !exists ? 'var(--sub)' : fileInfo.size < 10 ? 'var(--y)' : 'var(--g)';
+        const icon  = !exists ? '❌' : fileInfo.size < 10 ? '⚠️' : '✅';
+        return `<span style="font-size:11px;color:${color}">${icon} ${label}: ${exists ? kb : 'not found'}</span>`;
+      }
+      const tierEl = document.createElement('div');
+      tierEl.style.cssText = 'background:var(--bg3);border:1px solid var(--bdr2);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:5px';
+      tierEl.innerHTML = `
+        <div style="font-size:13px;font-weight:700;color:var(--c);margin-bottom:4px">⚡ Tier ${t.tier}</div>
+        ${badge(t.state, t.stateFile)}
+        ${badge(t.alt,   t.altFile)}
+        ${badge(t.creds, t.credsFile)}
+      `;
+      grid.appendChild(tierEl);
+    });
+  }).catch(() => {
+    grid.innerHTML = '<span style="color:var(--r);font-size:12px">Failed to load account tiers.</span>';
+  });
 }
 
 // ─── Dashboard ─────────────────────────────────────────────
