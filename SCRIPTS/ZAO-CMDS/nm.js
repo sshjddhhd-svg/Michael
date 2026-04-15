@@ -28,7 +28,7 @@ function saveLocks(locksMap) {
 
 function setTitle(api, name, threadID) {
   return new Promise((resolve, reject) => {
-    api.setTitle(name, threadID, (err) => {
+    api.gcname(name, threadID, (err) => {
       if (err) reject(err);
       else resolve();
     });
@@ -62,7 +62,6 @@ module.exports.onLoad = function ({ api }) {
   global._nmInterval = setInterval(async () => {
     const botApi = global._botApi || api;
     if (!botApi || global.nameLocks.size === 0) return;
-
     for (const [threadID, lockedName] of global.nameLocks.entries()) {
       try {
         await setTitle(botApi, lockedName, threadID);
@@ -87,13 +86,11 @@ module.exports.run = async function ({ api, event, args }) {
   if (action === "تفعيل") {
     const name = args.slice(1).join(" ").trim();
     if (!name) return api.sendMessage("⚠️ أدخل الاسم.\nمثال: nm تفعيل اسم المجموعة", threadID, messageID);
-
     try {
       await setTitle(api, name, threadID);
     } catch (e) {
       return api.sendMessage(`❌ فشل تغيير الاسم: ${e.message || e}`, threadID, messageID);
     }
-
     global.nameLocks.set(threadID, name);
     saveLocks(global.nameLocks);
     return api.sendMessage(`🔒 تم قفل اسم المجموعة:\n"${name}"`, threadID, messageID);
