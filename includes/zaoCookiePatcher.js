@@ -94,13 +94,18 @@ function patchCookieApi(api, accountInfo = {}) {
   // ── 2. Cookie persistence — save fresh cookies after any successful action ─
   // The FCA refreshes tokens internally. We hook the getAppState method so
   // every time it's called (e.g. by token refresh) we persist to disk too.
+  // _persistPending prevents concurrent setImmediate writes from racing each
+  // other and corrupting the JSON file when multiple token refreshes fire in
+  // the same event-loop tick.
   if (typeof api.getAppState === "function") {
     const originalGetAppState = api.getAppState.bind(api);
+    let _persistPending = false;
     api.getAppState = function patchedGetAppState() {
       const state = originalGetAppState();
-      // Persist in the background — don't block the caller
-      if (Array.isArray(state) && state.length > 0 && accountInfo.stateFile) {
+      if (Array.isArray(state) && state.length > 0 && accountInfo.stateFile && !_persistPending) {
+        _persistPending = true;
         setImmediate(() => {
+          _persistPending = false;
           try {
             const data = JSON.stringify(state, null, 2);
             fs.writeFileSync(accountInfo.stateFile, data, "utf-8");

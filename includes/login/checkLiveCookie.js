@@ -96,19 +96,20 @@ module.exports = async function checkLiveCookie(cookie, userAgent) {
 
   // 1. Try mbasic root first (most lightweight)
   const r1 = await tryUrl("https://mbasic.facebook.com/");
-  if (r1 === true)  return true;
-  if (r1 === false) return false;
+  if (r1 === true) return true;
+  // Don't return false on first check alone — Replit IPs may get login walls even with valid cookies
 
   // 2. Fallback: home.php
   const r2 = await tryUrl("https://www.facebook.com/home.php");
-  if (r2 === true)  return true;
-  if (r2 === false) return false;
+  if (r2 === true) return true;
 
   // 3. Final fallback: mobile web
   const r3 = await tryUrl("https://m.facebook.com/");
-  if (r3 === true)  return true;
-  if (r3 === false) return false;
+  if (r3 === true) return true;
 
-  // All three returned uncertain — cannot determine
+  // Only return false if ALL three confirmed dead (not just uncertain/null)
+  if (r1 === false && r2 === false && r3 === false) return false;
+
+  // At least one was uncertain — let FCA decide
   return null;
 };

@@ -9,7 +9,8 @@ module.exports = function ({ models, api }) {
 		try {
 			if (global.data.userName.has(id)) return global.data.userName.get(id);
 			else if (global.data.allUserID.includes(id)) {
-				const nameUser = (await this.getData(id)).name;
+				const record = await getData(id);
+				const nameUser = record && record.name;
 				if (nameUser) return nameUser;
 				else return "Facebook users";
 			} else return "Facebook users";
@@ -48,22 +49,24 @@ module.exports = function ({ models, api }) {
 	async function setData(userID, options = {}) {
 		if (typeof options != 'object' && !Array.isArray(options)) throw global.getText("users", "needObject");
 		try {
-			(await Users.findOne({ where: { userID } })).update(options);
+			const record = await Users.findOne({ where: { userID } });
+			if (record) {
+				await record.update(options);
+			} else {
+				await createData(userID, options);
+			}
 			return true;
 		}
 		catch (error) {
-			try {
-				await this.createData(userID, options);
-			} catch (error) {
-				console.error(error);
-				throw new Error(error);
-			}
+			console.error(error);
+			throw new Error(error);
 		}
 	}
 
 	async function delData(userID) {
 		try {
-			(await Users.findOne({ where: { userID } })).destroy();
+			const record = await Users.findOne({ where: { userID } });
+			if (record) await record.destroy();
 			return true;
 		}
 		catch (error) {

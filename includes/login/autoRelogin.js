@@ -137,8 +137,11 @@ async function tryTierLogin(tierInfo, api) {
     } catch (_) {}
   }
 
-  // ── 4. Config/env credentials (Tier 1 only, no creds file present) ─
-  if (tierInfo.tier === 1 && !fileCreds) {
+  // ── 4. Config/env credentials (Tier 1 only, always tried as last resort) ─
+  // This runs whether or not a creds file was present — the file might have
+  // existed but contained wrong credentials, so we must still fall through to
+  // the global config/env credentials before giving up on Tier 1.
+  if (tierInfo.tier === 1) {
     const email    = process.env.FB_EMAIL    || global.config?.EMAIL;
     const password = process.env.FB_PASSWORD || global.config?.PASSWORD;
     if (email && password) {
@@ -234,6 +237,8 @@ async function forceTierSwitch(api, reason) {
     notifyAdmins(api,
       `✅ HEALTH MONITOR: switched to Tier ${tierInfo.tier} successfully.\nBot restarting...`
     );
+    // Lock the flag so no new relogin attempt can start during the exit window
+    isAttempting = true;
     setTimeout(() => process.exit(0), RESTART_DELAY);
     return true;
   } catch (saveErr) {
@@ -347,6 +352,8 @@ async function autoRelogin(api, reason) {
       `✅ AUTO RELOGIN SUCCESS\n\nTier ${tierInfo.tier} session restored. Bot is restarting...`
     );
 
+    // Lock the flag so no new relogin attempt can start during the exit window
+    isAttempting = true;
     setTimeout(() => process.exit(0), RESTART_DELAY);
     return true;
 

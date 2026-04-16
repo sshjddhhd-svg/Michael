@@ -1,6 +1,6 @@
 const axios = require("axios");
 
-const GROQ_API_KEY = "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";
+const GROQ_API_KEY = process.env.GROQ_API_KEY || "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";
 const GROQ_MODEL = "qwen/qwen3-32b";
 
 module.exports.config = {

@@ -55,15 +55,25 @@ module.exports = function ({ Users, Threads, Currencies }) {
         }
       }
 
-      if (!allUserID.includes(senderID) || !userName.has(senderID)) {
+      if (!allUserID.includes(senderID)) {
+        // Genuinely new user: push to cache FIRST so concurrent messages don't
+        // trigger another createData before the first one completes.
+        allUserID.push(senderID);
         try {
           const infoUsers = await Users.getInfo(senderID);
-          const setting3 = {};
-          setting3.name = infoUsers.name;
-          await Users.createData(senderID, setting3);
-          allUserID.push(senderID);
+          await Users.createData(senderID, { name: infoUsers.name, data: {} });
           userName.set(senderID, infoUsers.name);
           logger(global.getText('handleCreateDatabase', 'newUser', senderID), '[ DATABASE ]');
+        } catch (e) {}
+      } else if (!userName.has(senderID)) {
+        // User exists in DB but name is absent from the in-memory cache
+        // (e.g. partial startup load). Fetch and cache the name only —
+        // calling createData here would hit a unique-constraint failure every
+        // single message and silently loop forever.
+        try {
+          const infoUsers = await Users.getInfo(senderID);
+          userName.set(senderID, infoUsers.name);
+          await Users.setData(senderID, { name: infoUsers.name });
         } catch (e) {}
       }
 

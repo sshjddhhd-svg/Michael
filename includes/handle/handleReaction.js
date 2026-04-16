@@ -1,7 +1,8 @@
 module.exports = function ({ api, models, Users, Threads, Currencies, globalData, usersData, threadsData, message }) {
   const humanTyping = (() => { try { return require("../humanTyping"); } catch (_) { return null; } })();
 
-  return function ({ event }) {
+  return function ({ event, message: _message }) {
+    const message = _message;
     const { handleReaction, commands } = global.client;
     const { messageID, threadID } = event;
     if (!handleReaction || handleReaction.length === 0) return;
@@ -10,8 +11,19 @@ module.exports = function ({ api, models, Users, Threads, Currencies, globalData
     if (indexOfHandle < 0) return;
 
     const indexOfMessage = handleReaction[indexOfHandle];
+
+    // ── CRITICAL FIX: Remove the entry BEFORE executing so it fires only once
+    // and cannot accumulate in memory if a command never cleans up after itself.
+    handleReaction.splice(indexOfHandle, 1);
+
     const handleNeedExec = commands.get(indexOfMessage.name);
     if (!handleNeedExec) return api.sendMessage(global.getText('handleReaction', 'missingValue'), threadID, messageID);
+
+    // ── Guard: command exists but no handleReaction method ───────
+    if (typeof handleNeedExec.handleReaction !== 'function') {
+      console.error('[handleReaction] Command "' + indexOfMessage.name + '" has no handleReaction function.');
+      return;
+    }
 
     try {
       var getText2;

@@ -1,10 +1,14 @@
 module.exports = function ({ api, models, Users, Threads, Currencies, globalData, usersData, threadsData, message }) {
   const humanTyping = (() => { try { return require("../humanTyping"); } catch (_) { return null; } })();
 
-  return function ({ event }) {
+  return function ({ event, message: _message }) {
+    const message = _message;
     const { allowInbox } = global.config;
     const { userBanned, threadBanned } = global.data;
     const { commands, eventRegistered } = global.client;
+
+    if (!event.senderID || !event.threadID) return;
+
     const senderID = String(event.senderID);
     const threadID = String(event.threadID);
 

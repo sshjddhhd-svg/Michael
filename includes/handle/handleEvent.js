@@ -11,7 +11,8 @@ module.exports = function ({ api, models, Users, Threads, Currencies, globalData
   const logger = require("../../utils/log.js");
   const moment = require("moment");
 
-  return function ({ event }) {
+  return function ({ event, message: _message }) {
+    const message = _message;
     const timeStart = Date.now();
     const time = moment.tz("Asia/Manila").format("HH:mm:ss L");
     const { userBanned, threadBanned } = global.data;

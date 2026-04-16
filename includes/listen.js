@@ -129,23 +129,53 @@ module.exports = function({ api, models, globalData, usersData, threadsData }) {
   } catch (_) {}
 
   // ── Shared context object passed to all handler factories ────
-  // The message helper is event-specific (uses event.threadID for replies),
-  // so it must be created per-event. However, we pre-build the handler
-  // factories once so they don't re-require modules on every message.
+  // message is event-specific so it is NOT included here; each factory's
+  // inner function now accepts { event, message } and uses the per-event value.
   const handlerCtx = { api, models, Users, Threads, Currencies, globalData, usersData, threadsData };
 
-  // ── Cooldown map cleanup — runs every 30 minutes ─────────────
+  // ── Pre-build handler functions ONCE per listen session ──────
+  // Factories (require calls, Object.create wrapping, closure setup) run here
+  // exactly once instead of on every incoming event.
+  const storedDatabase     = handleCreateDatabase(handlerCtx);
+  const storedCommand      = handleCommand(handlerCtx);
+  const storedReply        = handleReply(handlerCtx);
+  const storedCommandEvent = handleCommandEvent(handlerCtx);
+  const storedEvent        = handleEvent(handlerCtx);
+  const storedReaction     = handleReaction(handlerCtx);
+
+  // ── Cooldown map + callback array cleanup — runs every 30 minutes ──
   // Prevents unbounded memory growth as more users interact over time.
   setInterval(() => {
+    // 1. Trim cooldown timestamps older than 1 hour
     try {
       const { cooldowns } = global.client;
-      if (!cooldowns) return;
-      const now = Date.now();
-      for (const [cmdName, timestamps] of cooldowns.entries()) {
-        for (const [userID, ts] of timestamps.entries()) {
-          if (now - ts > 60 * 60 * 1000) timestamps.delete(userID);
+      if (cooldowns) {
+        const now = Date.now();
+        for (const [cmdName, timestamps] of cooldowns.entries()) {
+          for (const [userID, ts] of timestamps.entries()) {
+            if (now - ts > 60 * 60 * 1000) timestamps.delete(userID);
+          }
+          if (timestamps.size === 0) cooldowns.delete(cmdName);
         }
-        if (timestamps.size === 0) cooldowns.delete(cmdName);
+      }
+    } catch (_) {}
+
+    // 2. Cap handleReply / handleReaction arrays at 200 entries each.
+    // Entries older than the cap are silently dropped (the user never replied).
+    // After this fix, entries are removed on execution, so overflow only
+    // happens when many users start interactions and never complete them.
+    try {
+      const MAX_CALLBACKS = 200;
+      const { handleReply, handleReaction } = global.client;
+      if (Array.isArray(handleReply) && handleReply.length > MAX_CALLBACKS) {
+        const pruned = handleReply.length - MAX_CALLBACKS;
+        handleReply.splice(0, pruned);
+        console.log(`[CLEANUP] Pruned ${pruned} stale handleReply entries.`);
+      }
+      if (Array.isArray(handleReaction) && handleReaction.length > MAX_CALLBACKS) {
+        const pruned = handleReaction.length - MAX_CALLBACKS;
+        handleReaction.splice(0, pruned);
+        console.log(`[CLEANUP] Pruned ${pruned} stale handleReaction entries.`);
       }
     } catch (_) {}
   }, 30 * 60 * 1000);
@@ -182,17 +212,10 @@ module.exports = function({ api, models, globalData, usersData, threadsData }) {
   } catch (_) {}
 
   try {
+    // Create per-event message helper; pre-built handler fns receive it as a
+    // second argument so factories don't need to be re-called every message.
     const message = Messages(api, event);
-    const ctx = Object.assign({ message }, handlerCtx);
-    const handlers = {
-      command:      handleCommand(ctx),
-      commandEvent: handleCommandEvent(ctx),
-      reply:        handleReply(ctx),
-      reaction:     handleReaction(ctx),
-      event:        handleEvent(ctx),
-      database:     handleCreateDatabase(ctx)
-    };
-    
+
     switch (event.type) {
       case "message":
       case "message_reply":
@@ -223,26 +246,28 @@ module.exports = function({ api, models, globalData, usersData, threadsData }) {
             }
           } catch (_) {}
           try {
-            handlers.database({ event });
-            handlers.command({ event });
-            handlers.reply({ event });
-            handlers.commandEvent({ event });
+            storedDatabase({ event });
+            storedCommand({ event, message });
+            storedReply({ event, message });
+            storedCommandEvent({ event, message });
           } catch (err) {
-            logger.log([{ message: "[ HANDLER ERROR ]: ", color: ["red", "cyan"] }, { message: err.message, color: "white" }]);
+            const errMsg = (err && err.message) ? err.message : String(err);
+            logger.log([{ message: "[ HANDLER ERROR ]: ", color: ["red", "cyan"] }, { message: errMsg, color: "white" }]);
           }
         })();
         break;
       }
       case "event":
         try {
-          handlers.event({ event });
+          storedEvent({ event, message });
         } catch (err) {
-          logger.log([{ message: "[ EVENT ERROR ]: ", color: ["red", "cyan"] }, { message: err.message, color: "white" }]);
+          const errMsg = (err && err.message) ? err.message : String(err);
+          logger.log([{ message: "[ EVENT ERROR ]: ", color: ["red", "cyan"] }, { message: errMsg, color: "white" }]);
         }
         break;
       case "message_reaction":
         try {
-          handlers.reaction({ event });
+          storedReaction({ event, message });
           if (event.reaction === "🖤") {
             api.setMessageReaction("🖤", event.messageID, () => {}, true);
           }
@@ -276,14 +301,16 @@ module.exports = function({ api, models, globalData, usersData, threadsData }) {
             }
           } catch (_) {}
         } catch (err) {
-          logger.log([{ message: "[ REACTION ERROR ]: ", color: ["red", "cyan"] }, { message: err.message, color: "white" }]);
+          const errMsg = (err && err.message) ? err.message : String(err);
+          logger.log([{ message: "[ REACTION ERROR ]: ", color: ["red", "cyan"] }, { message: errMsg, color: "white" }]);
         }
         break;
       default:
         break;
     }
   } catch (err) {
-    logger.log([{ message: "[ EVENT LOOP ERROR ]: ", color: ["red", "cyan"] }, { message: err.message, color: "white" }]);
+    const errMsg = (err && err.message) ? err.message : String(err);
+    logger.log([{ message: "[ EVENT LOOP ERROR ]: ", color: ["red", "cyan"] }, { message: errMsg, color: "white" }]);
   }
         };
 };

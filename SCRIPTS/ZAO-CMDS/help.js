@@ -38,7 +38,7 @@ module.exports.run = async function ({ api, event }) {
   const cmdList = names.map(n => `❈ - ${n}`).join("\n");
 
   const msg =
-    `﹟Ꮓ'ɑ︩︪𝗈 🪙⃞⃪̸̷̶↴٫ - 𝟏͟𝟐:͟𝟑͟𝟎 ⋆៸៸ ⨾𝐋'ı⃟̸̷⃪̶𝗌ȶ  ˖\n` +
+    `﹟Ꮓ'ɑ︩︪𝗈 🪙⃞⃪̸̷̶↴٫ - ${time} ⋆៸៸ ⨾𝐋'ı⃟̸̷⃪̶𝗌ȶ  ˖\n` +
     `${cmdList}`;
 
   return api.sendMessage(msg, threadID, messageID);

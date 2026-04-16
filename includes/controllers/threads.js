@@ -24,7 +24,7 @@ module.exports = function ({ models, api }) {
 			console.error(error);
 			throw new Error(error);
 		}
-}
+	}
 
 	async function getData(threadID) {
 		try {
@@ -34,30 +34,30 @@ module.exports = function ({ models, api }) {
 		} 
 		catch (error) { 
 			console.error(error);
-            throw new Error(error);
+			throw new Error(error);
 		}
 	}
 
 	async function setData(threadID, options = {}) {
 		if (typeof options != 'object' && !Array.isArray(options)) throw global.getText("threads", "needObject");
 		try {
-			(await Threads.findOne({ where: { threadID } })).update(options);
-			return true;
-		} catch (error) { 
-			try{
-				await this.createData(threadID, options);
-
-			} catch (error) {
-				console.error(error);
-				throw new Error(error);
+			const record = await Threads.findOne({ where: { threadID } });
+			if (record) {
+				await record.update(options);
+			} else {
+				await createData(threadID, options);
 			}
-			
+			return true;
+		} catch (error) {
+			console.error(error);
+			throw new Error(error);
 		}
 	}
 
 	async function delData(threadID) {
 		try {
-			(await Threads.findOne({ where: { threadID } })).destroy();
+			const record = await Threads.findOne({ where: { threadID } });
+			if (record) await record.destroy();
 			return true;
 		}
 		catch (error) {
@@ -72,7 +72,7 @@ module.exports = function ({ models, api }) {
 			await Threads.findOrCreate({ where: { threadID }, defaults });
 			return true;
 		}
-		catch {
+		catch (error) {
 			console.error(error);
 			throw new Error(error);
 		}

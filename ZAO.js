@@ -8,6 +8,17 @@ const axios = require('axios');
 const { join, resolve } = require('path');
 const { execSync } = require('child_process');
 const logger = require('./utils/log.js');
+
+// ─── Ensure data directory exists at startup ──────────────────
+try { require('fs-extra').ensureDirSync(require('path').join(process.cwd(), 'data')); } catch (_) {}
+
+// ─── nkxfca library patcher ───────────────────────────────────
+// Prevents the library's old loginHelper from registering a
+// process.exit(1) handler that kills the bot before state is saved
+// or another tier is tried. Must run before login().
+const nkxPatcher = require('./includes/nkxfcaPatcher');
+nkxPatcher.preventLoginHelperHandlers();
+
 const login = require('./includes/Emalogin');
 const modernizeNkxApi = require('./includes/nkxfcaModernizer');
 const listPackage = JSON.parse(readFileSync('./package.json'))['dependencies'];
@@ -264,6 +275,9 @@ async function onBot({ models }) {
 
     _api = loginResult;
     _api = modernizeNkxApi(_api);
+
+    // Patch nkxfca's internal antiSuspension limits after the library is loaded
+    nkxPatcher.patchAntiSuspensionLimits();
   } catch (e) {
     logger.log([
       { message: '[ Login ]: ', color: ['red', 'cyan'] },
@@ -273,6 +287,7 @@ async function onBot({ models }) {
   }
 
   global.botUserID = _api.getCurrentUserID ? _api.getCurrentUserID() : '';
+  global._botApi   = _api;   // exposed so timers/keepAlive/health modules can reach the live API
 
   // ── Set API options ───────────────────────────────────────
   _api.setOptions({
@@ -318,7 +333,7 @@ async function onBot({ models }) {
         if (!cmd['config'] || !cmd['run'])
           throw new Error(global['getText']('mirai', 'Error in cmd format'));
 
-        if (global['client']['commands'].has(cmd['config']['name']) || '')
+        if (global['client']['commands'].has(cmd['config']['name']))
           throw new Error(global['getText']('mirai', 'Name Is Repeated'));
 
         // Install npm dependencies declared in cmd config
@@ -342,7 +357,9 @@ async function onBot({ models }) {
               );
               for (let attempt = 1; attempt <= 3; attempt++) {
                 try {
-                  require['cache'] = {};
+                  // Clear only this module from cache, not the entire cache
+                  try { delete require.cache[require.resolve(pkgPath)]; } catch (_) {}
+                  try { delete require.cache[require.resolve(pkgName)]; } catch (_) {}
                   if (listPackage.hasOwnProperty(pkgName) || listbuiltinModules.includes(pkgName))
                     global['nodemodule'][pkgName] = require(pkgName);
                   else
@@ -354,7 +371,7 @@ async function onBot({ models }) {
                 }
                 if (loaded || !lastErr) break;
               }
-              if (!loaded || lastErr) throw console.log();
+              if (!loaded || lastErr) throw (lastErr || new Error('Failed to load dependency: ' + pkgName));
             }
           }
         }
@@ -397,7 +414,10 @@ async function onBot({ models }) {
 
         global['client']['commands'].set(cmd['config']['name'], cmd);
       } catch (e) {
-        logger.log([{ message: '[ SAIN ]: ', color: ['red', 'cyan'] }]);
+        logger.log([
+          { message: '[ CMD-LOAD ]: ', color: ['red', 'cyan'] },
+          { message: `Failed to load "${file}": ${e && e.message ? e.message : String(e)}`, color: 'white' }
+        ]);
       }
     }
   }());
@@ -414,7 +434,7 @@ async function onBot({ models }) {
         if (!evt['config'] || !evt['run'])
           throw new Error(global['getText']('mirai', 'Error in cmd format'));
 
-        if (global['client']['events'].has(evt['config']['name']) || '')
+        if (global['client']['events'].has(evt['config']['name']))
           throw new Error(global['getText']('mirai', 'Name Is Repeated'));
 
         // Install npm dependencies
@@ -438,7 +458,9 @@ async function onBot({ models }) {
               );
               for (let attempt = 1; attempt <= 3; attempt++) {
                 try {
-                  require['cache'] = {};
+                  // Clear only this module from cache, not the entire cache
+                  try { delete require.cache[require.resolve(pkgPath)]; } catch (_) {}
+                  try { delete require.cache[require.resolve(pkgName)]; } catch (_) {}
                   if (global['nodemodule'].hasOwnProperty(pkgName)) break;
                   if (listPackage.hasOwnProperty(pkgName) || listbuiltinModules.includes(pkgName))
                     global['nodemodule'][pkgName] = require(pkgName);
@@ -481,15 +503,18 @@ async function onBot({ models }) {
             onLoadArgs['models'] = _models;
             evt['onLoad'](onLoadArgs);
           } catch (e) {
-            logger.log([{ message: '[ SAIN ]: ', color: ['red', 'cyan'] }]);
+            logger.log([
+              { message: '[ EVT-ONLOAD ]: ', color: ['red', 'cyan'] },
+              { message: `onLoad error in "${file}": ${e && e.message ? e.message : String(e)}`, color: 'white' }
+            ]);
           }
         }
 
         global['client']['events'].set(evt['config']['name'], evt);
       } catch (e) {
         logger.log([
-          { message: '[ SAIN ]: ', color: ['red', 'cyan'] },
-          { message: 'ERROR on Event', color: 'white' }
+          { message: '[ EVT-LOAD ]: ', color: ['red', 'cyan'] },
+          { message: `Failed to load event "${file}": ${e && e.message ? e.message : String(e)}`, color: 'white' }
         ]);
       }
     }
@@ -526,7 +551,16 @@ async function onBot({ models }) {
   const autoRelogin = require('./includes/login/autoRelogin');
   global['_triggerAutoRelogin'] = function (reason) {
     try {
-      autoRelogin(_api, reason);
+      const p = autoRelogin(_api, reason);
+      // autoRelogin is async — attach .catch() so rejections don't become unhandled
+      if (p && typeof p.catch === 'function') {
+        p.catch(e => {
+          const log = global.loggeryuki;
+          const msg = 'autoRelogin rejected: ' + (e && e.message ? e.message : String(e));
+          if (log) log.log([{ message: '[ RELOGIN ]: ', color: ['red', 'cyan'] }, { message: msg, color: 'white' }]);
+          else console.error('[RELOGIN]', msg);
+        });
+      }
     } catch (_) {}
   };
 
@@ -556,7 +590,12 @@ async function onBot({ models }) {
         { message: '[ SESSION ]: ', color: ['red', 'cyan'] },
         { message: `${label}: ${errStr.slice(0, 120)}`, color: 'white' }
       ]);
-      autoRelogin(_api);
+      const _reloginPromise = autoRelogin(_api, label);
+      if (_reloginPromise && typeof _reloginPromise.catch === 'function') {
+        _reloginPromise.catch(e => {
+          logger.log([{ message: '[ SESSION ]: ', color: ['red', 'cyan'] }, { message: 'autoRelogin rejected: ' + (e && e.message ? e.message : String(e)), color: 'white' }]);
+        });
+      }
     } else {
       logger.log([
         { message: '[ LISTEN-ERR ]: ', color: ['red', 'cyan'] },
@@ -620,6 +659,9 @@ async function onBot({ models }) {
       require('fs').writeFileSync(_motorFile, JSON.stringify(out, null, 2), 'utf8');
     } catch (_) {}
   }
+  // Expose _saveMotorState globally so the uncaughtException handler can call it
+  global['_saveMotorState'] = _saveMotorState;
+
   // Restore persisted motor state and restart active intervals
   try {
     require('fs-extra').ensureDirSync(require('path').dirname(_motorFile));
@@ -630,7 +672,24 @@ async function onBot({ models }) {
         global['motorData'][tid] = { status: d.status || false, message: d.message || null, time: d.time || null, interval: null };
         if (d.status && d.message && d.time && d.time >= 5000) {
           const _tid = tid, _d = global['motorData'][tid];
-          _d.interval = setInterval(() => { if (_api) _api.sendMessage(_d.message, _tid).catch(() => {}); }, _d.time);
+          _d.interval = setInterval(() => {
+            if (!_api) return;
+            _api.sendMessage(_d.message, _tid).catch((err) => {
+              const _errMsg = String(err && (err.message || err)).toLowerCase();
+              if (
+                _errMsg.includes("no message_thread") ||
+                _errMsg.includes("thread may not exist") ||
+                _errMsg.includes("access may be restricted") ||
+                _errMsg.includes("not a participant") ||
+                _errMsg.includes("not found")
+              ) {
+                if (_d.interval) { clearInterval(_d.interval); _d.interval = null; }
+                _d.status = false;
+                _saveMotorState();
+                logger.log([{ message: '[ MOTOR ]: ', color: ['red', 'cyan'] }, { message: `Auto-disabled motor for dead thread ${_tid}`, color: 'yellow' }]);
+              }
+            });
+          }, _d.time);
           logger.log([{ message: '[ MOTOR ]: ', color: ['red', 'cyan'] }, { message: `Restored motor for ${_tid} (every ${_d.time / 1000}s)`, color: 'white' }]);
         }
       }
@@ -816,7 +875,17 @@ async function onBot({ models }) {
             if (!d.message) return _json(res, { error: 'No message set' }, 400);
             if (!d.time || d.time < 5000) return _json(res, { error: 'Set time first (min 5s)' }, 400);
             d.status = true;
-            d.interval = setInterval(() => { if (_api) _api.sendMessage(d.message, tid).catch(() => {}); }, d.time);
+            d.interval = setInterval(() => {
+              if (!_api) return;
+              _api.sendMessage(d.message, tid).catch((err) => {
+                const _em = String(err && (err.message || err)).toLowerCase();
+                if (_em.includes("no message_thread") || _em.includes("thread may not exist") || _em.includes("not a participant") || _em.includes("not found")) {
+                  if (d.interval) { clearInterval(d.interval); d.interval = null; }
+                  d.status = false;
+                  _saveMotorState();
+                }
+              });
+            }, d.time);
             _saveMotorState();
             return _json(res, { ok: true });
           }
@@ -998,6 +1067,7 @@ async function onBot({ models }) {
   // Start listening
   global['handleListen']  = _api['listenMqtt'](messageHandler);
   global['client']['api'] = _api;
+  global._botApi          = _api;   // keep reference fresh after listen starts
 
   // ── دالة إعادة تشغيل المستمع للـ MQTT Health Check ────────
   global['_restartListener'] = function () {
@@ -1100,17 +1170,13 @@ async function onBot({ models }) {
   }());
 
   // ─── 2 & 3. Save cookies to ZAO-STATE.json + alt.json every 10 min ──
+  // Routes through keepAlive.doSaveCookies() which uses an atomic
+  // tmp-file → rename write and an isSaving lock, so a mid-write kill
+  // can never leave a half-written (corrupted) JSON cookie file.
   setInterval(async () => {
     try {
-      const appState     = _api.getAppState();
-      const appStatePath = join(process.cwd(), global['config']['APPSTATEPATH'] || 'ZAO-STATE.json');
-      const altPath      = join(process.cwd(), 'alt.json');
-      writeFileSync(appStatePath, JSON.stringify(appState, null, 2), 'utf-8');
-      writeFileSync(altPath,      JSON.stringify(appState, null, 2), 'utf-8');
-      logger.log([
-        { message: '[ COOKIES ]: ', color: ['red', 'cyan'] },
-        { message: 'Cookies saved to ZAO-STATE.json & alt.json', color: 'white' }
-      ]);
+      const { doSaveCookies } = require('./includes/keepAlive');
+      await doSaveCookies('scheduled-10min');
     } catch (e) {
       logger.log([
         { message: '[ COOKIES ]: ', color: ['red', 'cyan'] },
@@ -1280,8 +1346,9 @@ async function onBot({ models }) {
   function gracefulShutdown(signal) {
     logger.log([
       { message: '[ SHUTDOWN ]: ', color: ['red', 'cyan'] },
-      { message: `${signal} received — saving cookies before exit.`, color: 'white' }
+      { message: `${signal} received — saving state before exit.`, color: 'white' }
     ]);
+    // Save cookies
     try {
       const appState     = _api.getAppState();
       const appStatePath = join(process.cwd(), global['config']['APPSTATEPATH'] || 'ZAO-STATE.json');
@@ -1289,7 +1356,7 @@ async function onBot({ models }) {
       writeFileSync(join(process.cwd(), 'alt.json'), JSON.stringify(appState, null, 2), 'utf-8');
       logger.log([
         { message: '[ SHUTDOWN ]: ', color: ['red', 'cyan'] },
-        { message: 'Cookies saved successfully. Goodbye.', color: 'white' }
+        { message: 'Cookies saved successfully.', color: 'white' }
       ]);
     } catch (e) {
       logger.log([
@@ -1297,7 +1364,42 @@ async function onBot({ models }) {
         { message: `Could not save cookies: ${e.message}`, color: 'white' }
       ]);
     }
+    // Save motor1 state
+    try { _saveMotorState(); } catch (_) {}
+    // Save motor2 state
+    try {
+      const _m2File = require('path').join(process.cwd(), 'data', 'motor2-state.json');
+      require('fs-extra').ensureDirSync(require('path').dirname(_m2File));
+      const _m2Out = {};
+      for (const [_tid, _d] of Object.entries(global['motorData2'] || {})) {
+        _m2Out[_tid] = { status: _d.status, message: _d.message, time: _d.time };
+      }
+      require('fs').writeFileSync(_m2File, JSON.stringify(_m2Out, null, 2), 'utf8');
+    } catch (_) {}
+    // Save nm locks
+    try {
+      const _nmFile = require('path').join(process.cwd(), 'data', 'nm-locks.json');
+      require('fs-extra').ensureDirSync(require('path').dirname(_nmFile));
+      const _nmOut = {};
+      if (global.nameLocks) {
+        for (const [k, v] of global.nameLocks.entries()) _nmOut[k] = v;
+      }
+      require('fs').writeFileSync(_nmFile, JSON.stringify(_nmOut, null, 2), 'utf8');
+    } catch (_) {}
+    // Save nicknames state
+    try {
+      const _nickFile = require('path').join(process.cwd(), 'data', 'nicknames-state.json');
+      require('fs-extra').ensureDirSync(require('path').dirname(_nickFile));
+      const _nickOut = {};
+      for (const [k, v] of Object.entries(global.nickPersist || {})) _nickOut[k] = v;
+      require('fs').writeFileSync(_nickFile, JSON.stringify(_nickOut, null, 2), 'utf8');
+    } catch (_) {}
+    // Save reply/reaction callbacks
     try { require('./includes/login/statePersist').save(); } catch (_) {}
+    logger.log([
+      { message: '[ SHUTDOWN ]: ', color: ['red', 'cyan'] },
+      { message: 'All state saved. Goodbye.', color: 'white' }
+    ]);
     process.exit(0);
   }
 
@@ -1357,9 +1459,18 @@ async function onBot({ models }) {
           const getFbstate = require('./includes/login/getFbstate');
           const appState   = await getFbstate(email, password);
           if (appState && Array.isArray(appState) && appState.length) {
-            const appStatePath = join(process.cwd(), global['config']['APPSTATEPATH'] || 'ZAO-STATE.json');
-            writeFileSync(appStatePath, JSON.stringify(appState, null, 2), 'utf-8');
-            writeFileSync(join(process.cwd(), 'alt.json'), JSON.stringify(appState, null, 2), 'utf-8');
+            // Use atomic tmp→rename write so a mid-write kill can never corrupt the state file
+            const _fsX       = require('fs-extra');
+            const _pathX     = require('path');
+            const appStatePath = _pathX.join(process.cwd(), global['config']['APPSTATEPATH'] || 'ZAO-STATE.json');
+            const altPath      = _pathX.join(process.cwd(), 'alt.json');
+            const newData      = JSON.stringify(appState, null, 2);
+            const tmpMain      = appStatePath + '.tmp';
+            const tmpAlt       = altPath + '.tmp';
+            await _fsX.writeFile(tmpMain, newData, 'utf-8');
+            await _fsX.move(tmpMain, appStatePath, { overwrite: true });
+            await _fsX.writeFile(tmpAlt, newData, 'utf-8');
+            await _fsX.move(tmpAlt, altPath, { overwrite: true });
             logger.log([
               { message: '[ REFRESH ]: ', color: ['red', 'cyan'] },
               { message: 'Fresh cookies obtained and saved ✓', color: 'white' }
@@ -1448,8 +1559,7 @@ process.on('unhandledRejection', (reason, promise) => {
 
 // ─── Global uncaught exception handler ───────────────────────
 // Catches synchronous throws that escape all try/catch blocks.
-// Logs the error and lets the watchdog decide whether to restart
-// rather than crashing silently or abruptly.
+// Saves state, then tries the next account tier instead of crashing.
 process.on('uncaughtException', (err, origin) => {
   const ts  = new Date().toISOString();
   const log = global.loggeryuki;
@@ -1471,5 +1581,42 @@ process.on('uncaughtException', (err, origin) => {
   } else {
     console.error('[UNCAUGHT-EXCEPTION]', fullMsg);
   }
-  // Do NOT call process.exit() — let the watchdog handle restarts
+
+  // Save cookies immediately so the watchdog has fresh state.
+  // Write to the files belonging to the ACTIVE tier so we never overwrite
+  // a Tier-2/3 session with Tier-1 paths when running on a secondary account.
+  try {
+    const currentApi = global['client'] && global['client']['api'];
+    if (currentApi && typeof currentApi.getAppState === 'function') {
+      const appState = currentApi.getAppState();
+      if (appState && Array.isArray(appState) && appState.length) {
+        const TIER_FILES = {
+          1: { stateFile: 'ZAO-STATE.json',  altFile: 'alt.json'  },
+          2: { stateFile: 'ZAO-STATEX.json', altFile: 'altx.json' },
+          3: { stateFile: 'ZAO-STATEV.json', altFile: 'altv.json' },
+        };
+        const activeTier = global['activeAccountTier'] && TIER_FILES[global['activeAccountTier']]
+          ? global['activeAccountTier']
+          : 1;
+        const { stateFile, altFile } = TIER_FILES[activeTier];
+        const appStatePath = join(process.cwd(), stateFile);
+        writeFileSync(appStatePath, JSON.stringify(appState, null, 2), 'utf-8');
+        writeFileSync(join(process.cwd(), altFile), JSON.stringify(appState, null, 2), 'utf-8');
+        if (log) log.log([{ message: '[ UNCAUGHT-EXCEPTION ]: ', color: ['red', 'cyan'] }, { message: `Cookies saved to Tier-${activeTier} files after crash.`, color: 'white' }]);
+      }
+    }
+  } catch (_) {}
+
+  // Save motor / nm / nicknames state
+  try { if (typeof global['_saveMotorState'] === 'function') global['_saveMotorState'](); } catch (_) {}
+  try { require('./includes/login/statePersist').save(); } catch (_) {}
+
+  // Try to recover by switching to the next account tier
+  // instead of dying silently or letting the watchdog do a cold restart.
+  try {
+    if (typeof global._triggerAutoRelogin === 'function') {
+      global._triggerAutoRelogin('uncaughtException: ' + msg.slice(0, 120));
+    }
+  } catch (_) {}
+  // Do NOT call process.exit() — keep the process alive for recovery
 });

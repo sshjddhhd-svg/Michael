@@ -14,7 +14,8 @@ module.exports = function ({ api, models, Users, Threads, Currencies, globalData
   const chalk = require("chalk");
   const moment = require("moment-timezone");
   
- return async function ({ event }) {
+ return async function ({ event, message: _message }) {
+    const message = _message;
     const dateNow = Date.now();
     const time = moment.tz("Asia/Manila").format("HH:mm:ss DD/MM/YYYY");
     const { allowInbox, PREFIX, ADMINBOT, DeveloperMode, adminOnly } =
@@ -67,6 +68,7 @@ module.exports = function ({ api, models, Users, Threads, Currencies, globalData
             global.getText("handleCommand", "userBanned", reason, dateAdded),
             threadID,
             async (err, info) => {
+              if (err || !info) return;
               await new Promise((resolve) => setTimeout(resolve, 5 * 1000));
               return api.unsendMessage(info.messageID);
             },
@@ -84,6 +86,7 @@ module.exports = function ({ api, models, Users, Threads, Currencies, globalData
               ),
               threadID,
               async (err, info) => {
+                if (err || !info) return;
                 await new Promise((resolve) => setTimeout(resolve, 5 * 1000));
                 return api.unsendMessage(info.messageID);
               },
@@ -130,6 +133,7 @@ module.exports = function ({ api, models, Users, Threads, Currencies, globalData
             ),
             threadID,
             async (err, info) => {
+              if (err || !info) return;
               await new Promise((resolve) => setTimeout(resolve, 5 * 1000));
               return api.unsendMessage(info.messageID);
             },
@@ -144,6 +148,7 @@ module.exports = function ({ api, models, Users, Threads, Currencies, globalData
             ),
             threadID,
             async (err, info) => {
+              if (err || !info) return;
               await new Promise((resolve) => setTimeout(resolve, 5 * 1000));
               return api.unsendMessage(info.messageID);
             },
@@ -161,6 +166,7 @@ module.exports = function ({ api, models, Users, Threads, Currencies, globalData
         global.getText("handleCommand", "threadNotAllowNSFW"),
         threadID,
         async (err, info) => {
+          if (err || !info) return;
           await new Promise((resolve) => setTimeout(resolve, 5 * 1000));
           return api.unsendMessage(info.messageID);
         },
@@ -201,7 +207,7 @@ module.exports = function ({ api, models, Users, Threads, Currencies, globalData
         event.messageID,
         (err) =>
           err
-            ? logger("حدث خطأ أثناء تنفيذ setMessageReaction", 2)
+            ? logger("حدث خطأ أثناء تنفيذ setMessageReaction", "warn")
             : "",
         !![]
       );
@@ -261,6 +267,7 @@ module.exports = function ({ api, models, Users, Threads, Currencies, globalData
       Obj.models = models;
       Obj.usersData = usersData;
       Obj.threadsData = threadsData;
+      Obj.globalData = globalData;
       Obj.Users = Users;
       Obj.message = message;
       Obj.Threads = Threads;

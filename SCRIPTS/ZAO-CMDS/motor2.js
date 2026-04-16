@@ -38,7 +38,20 @@ function startInterval(api, threadID) {
     const lastActive = (global.lastActivity || {})[threadID];
     if (!lastActive) return;
     if (Date.now() - lastActive < d.time * 2) {
-      botApi.sendMessage(d.message, threadID).catch(() => {});
+      botApi.sendMessage(d.message, threadID).catch((err) => {
+        const msg = String(err && (err.message || err)).toLowerCase();
+        if (
+          msg.includes("no message_thread") ||
+          msg.includes("thread may not exist") ||
+          msg.includes("access may be restricted") ||
+          msg.includes("not a participant") ||
+          msg.includes("not found")
+        ) {
+          if (d.interval) { clearInterval(d.interval); d.interval = null; }
+          d.status = false;
+          saveState();
+        }
+      });
     }
   }, d.time);
 }
