@@ -1555,6 +1555,19 @@ process.on('unhandledRejection', (reason, promise) => {
   } else {
     console.error('[UNHANDLED-REJECTION]', fullMsg);
   }
+
+  // If the rejection looks like an auth/session error, trigger relogin recovery
+  try {
+    const msgLower = msg.toLowerCase();
+    const isAuthRelated = [
+      'session', 'expired', 'checkpoint', 'unauthorized', 'invalid token',
+      'logout', 'not-authorized', 'login_blocked', 'account_inactive', 'auth_error',
+      'not logged in', 'loginhelper'
+    ].some(k => msgLower.includes(k));
+    if (isAuthRelated && typeof global._triggerAutoRelogin === 'function') {
+      global._triggerAutoRelogin('unhandledRejection: ' + msg.slice(0, 120));
+    }
+  } catch (_) {}
 });
 
 // ─── Global uncaught exception handler ───────────────────────
@@ -1611,12 +1624,20 @@ process.on('uncaughtException', (err, origin) => {
   try { if (typeof global['_saveMotorState'] === 'function') global['_saveMotorState'](); } catch (_) {}
   try { require('./includes/login/statePersist').save(); } catch (_) {}
 
-  // Try to recover by switching to the next account tier
-  // instead of dying silently or letting the watchdog do a cold restart.
+  // Try to recover by switching to the next account tier.
+  // If _triggerAutoRelogin is not yet registered (early crash during startup),
+  // exit with code 1 so the watchdog can restart the process cleanly.
   try {
     if (typeof global._triggerAutoRelogin === 'function') {
       global._triggerAutoRelogin('uncaughtException: ' + msg.slice(0, 120));
+    } else {
+      // Bot hasn't finished initializing — let the watchdog do a clean restart
+      const _log2 = global.loggeryuki;
+      if (_log2) _log2.log([{ message: '[ UNCAUGHT-EXCEPTION ]: ', color: ['red', 'cyan'] }, { message: 'relogin handler not ready — exiting for watchdog restart.', color: 'yellow' }]);
+      else console.error('[UNCAUGHT-EXCEPTION] relogin handler not ready — exiting for watchdog restart.');
+      setTimeout(() => process.exit(1), 500);
     }
-  } catch (_) {}
-  // Do NOT call process.exit() — keep the process alive for recovery
+  } catch (_) {
+    setTimeout(() => process.exit(1), 500);
+  }
 });

@@ -78,7 +78,9 @@ module.exports.run = async function ({ api, event, args, permssion }) {
 
     data.status = true;
     data.interval = setInterval(() => {
-      api.sendMessage(data.message, threadID);
+      const botApi = global._botApi || api;
+      const r = botApi.sendMessage(data.message, threadID);
+      if (r && typeof r.catch === 'function') r.catch(() => {});
     }, data.time);
 
     return api.sendMessage(`✅ تم تفعيل المحرك.\n📝 الرسالة: "${data.message}"\n⏱ كل: ${data.time / 1000}s`, threadID, messageID);

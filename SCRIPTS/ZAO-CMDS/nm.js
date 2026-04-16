@@ -28,10 +28,15 @@ function saveLocks(locksMap) {
 
 function setTitle(api, name, threadID) {
   return new Promise((resolve, reject) => {
-    api.gcname(name, threadID, (err) => {
-      if (err) reject(err);
-      else resolve();
-    });
+    try {
+      const result = api.gcname(name, threadID, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+      if (result && typeof result.catch === 'function') result.catch(() => {});
+    } catch (e) {
+      reject(e);
+    }
   });
 }
 
@@ -62,11 +67,25 @@ module.exports.onLoad = function ({ api }) {
   global._nmInterval = setInterval(async () => {
     const botApi = global._botApi || api;
     if (!botApi || global.nameLocks.size === 0) return;
+
+    const health = global.nkx?.health;
+    if (health) {
+      const mqttOk = health?.mqtt?.isConnected ?? health?.mqttConnected ?? true;
+      if (!mqttOk) return;
+    }
+
     for (const [threadID, lockedName] of global.nameLocks.entries()) {
       try {
         await setTitle(botApi, lockedName, threadID);
       } catch (err) {
         const msg = String(err && (err.message || err)).toLowerCase();
+        if (
+          msg.includes("not connected to mqtt") ||
+          msg.includes("mqtt client is not initialized") ||
+          msg.includes("mqtt")
+        ) {
+          continue;
+        }
         if (
           msg.includes("no message_thread") ||
           msg.includes("thread may not exist") ||

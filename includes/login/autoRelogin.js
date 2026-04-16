@@ -20,6 +20,15 @@ const path           = require("path");
 const parseAppState  = require("./parseAppState");
 const { patchCookieApi } = require("../zaoCookiePatcher");
 
+// ── Tier persistence (mirrors logic in Emalogin/index.js) ────────────────────
+const TIER_PERSIST_FILE = path.join(process.cwd(), "data", "active-tier.json");
+function writePersistedTier(tier) {
+  try {
+    fs.ensureDirSync(path.dirname(TIER_PERSIST_FILE));
+    fs.writeFileSync(TIER_PERSIST_FILE, JSON.stringify({ tier, ts: new Date().toISOString() }, null, 2), "utf-8");
+  } catch (_) {}
+}
+
 const COOLDOWN_MS   = 3  * 60 * 1000;  // 3 minutes between attempts
 const MAX_RETRIES   = 4;               // per tier
 const RESTART_DELAY = 3000;
@@ -232,6 +241,7 @@ async function forceTierSwitch(api, reason) {
       altFile:     altFullPath,
       loginMethod: "appstate"
     });
+    writePersistedTier(tierInfo.tier);
     try { require("./statePersist").save(); } catch (_) {}
     log("info", `forceTierSwitch: success — Tier ${tierInfo.tier}. Restarting in ${RESTART_DELAY / 1000}s...`);
     notifyAdmins(api,
@@ -343,6 +353,7 @@ async function autoRelogin(api, reason) {
       loginMethod: "appstate"
     });
 
+    writePersistedTier(tierInfo.tier);
     // Persist any pending callbacks before restart
     try { require("./statePersist").save(); } catch (_) {}
 

@@ -34,7 +34,9 @@ function startMotor(api, threadID) {
   if (data.interval) { clearInterval(data.interval); data.interval = null; }
   data.status = true;
   data.interval = setInterval(() => {
-    api.sendMessage(data.message, threadID);
+    const botApi = global._botApi || api;
+    const r = botApi.sendMessage(data.message, threadID);
+    if (r && typeof r.catch === 'function') r.catch(() => {});
   }, data.time);
 }
 
@@ -44,10 +46,12 @@ function startMotor2(api, threadID) {
   if (data.interval) { clearInterval(data.interval); data.interval = null; }
   data.status = true;
   data.interval = setInterval(() => {
+    const botApi = global._botApi || api;
     const lastActive = global.lastActivity[threadID];
     if (!lastActive) return;
     if (Date.now() - lastActive < data.time * 2) {
-      api.sendMessage(data.message, threadID);
+      const r = botApi.sendMessage(data.message, threadID);
+      if (r && typeof r.catch === 'function') r.catch(() => {});
     }
   }, data.time);
 }

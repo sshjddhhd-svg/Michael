@@ -287,7 +287,7 @@ function restoreCookies() {
 const MAX_RESTARTS = 100;
 const STABLE_MS    = 10 * 60 * 1000;
 const BASE_DELAY   = 3_000;
-const MAX_DELAY    = 2 * 60 * 1000;
+const MAX_DELAY    = 30_000;
 
 function startBot() {
   if (isStopping) return;

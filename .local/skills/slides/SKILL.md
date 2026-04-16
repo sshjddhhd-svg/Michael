@@ -1,9 +1,18 @@
 ---
 name: slides
-description: Instructions for building and editing slide deck artifacts in the Replit workspace. Use this skill when the user asks for slides, a presentation, a pitch deck, a slide deck, or any slide-based content. Covers the manifest contract, slide component conventions, visual editing compatibility, and design guidance for creating presentations.
+description: Instructions for building, editing, and importing slide deck artifacts in the Replit workspace. Use this skill when the user asks for slides, a presentation, a pitch deck, a slide deck, or any slide-based content, or when the user attaches or imports a .pptx file. Covers the manifest contract, slide component conventions, visual editing compatibility, PPTX import, and design guidance for creating presentations.
 ---
 
 # Slides -- Presentation Decks in Code
+
+## PPTX Import — Handle First
+
+If the user has attached a `.pptx` file or asks to import/convert a presentation, call `importPptx` IMMEDIATELY. Do NOT generate templates, outlines, images, or content — the import callback handles everything.
+
+1. Call `importPptx({ filePath: "attached_assets/<filename>.pptx" })` — the artifact directory is resolved automatically.
+2. Tell the user: "I've imported your deck — it's ready to view. Want me to adjust the styling or content?"
+
+Do NOT proceed with any other slide creation workflow when importing a PPTX. No template selection, no content outline, no manual slide building.
 
 
 

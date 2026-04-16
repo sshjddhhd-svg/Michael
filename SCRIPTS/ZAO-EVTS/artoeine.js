@@ -7,8 +7,9 @@ module.exports.config = {
 };
 
 module.exports.run = async({ event, api, Threads, Users }) => {
- let data = (await Threads.getData(event.threadID)).data || {};
- if (data.antiout == false) return;
+ let threadRow = await Threads.getData(event.threadID);
+ let data = (threadRow && threadRow.data) || {};
+ if (data.antiout !== true) return;
  if (event.logMessageData.leftParticipantFbId == api.getCurrentUserID()) return;
  const name = global.data.userName.get(event.logMessageData.leftParticipantFbId) || await Users.getNameUser(event.logMessageData.leftParticipantFbId);
  const type = (event.author == event.logMessageData.leftParticipantFbId) ? "self-separation" : "being kicked by the administrator";

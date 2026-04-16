@@ -51,7 +51,8 @@ async function simulateTyping(api, threadID, delayMs) {
 
   try {
     if (typeof api.sendTypingIndicator === 'function') {
-      api.sendTypingIndicator(threadID, () => {});
+      const r = api.sendTypingIndicator(threadID, () => {});
+      if (r && typeof r.catch === 'function') r.catch(() => {});
     }
   } catch (_) {}
 
@@ -62,7 +63,8 @@ async function simulateTyping(api, threadID, delayMs) {
   if (Math.random() < thinkChance) {
     try {
       if (typeof api.sendTypingIndicator === 'function') {
-        api.sendTypingIndicator(threadID, () => {});
+        const r2 = api.sendTypingIndicator(threadID, () => {});
+        if (r2 && typeof r2.catch === 'function') r2.catch(() => {});
       }
     } catch (_) {}
   }

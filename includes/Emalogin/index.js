@@ -6,6 +6,29 @@ const { loginAsync } = require("../fcaClient");
 const parseAppState  = require("../login/parseAppState");
 const { patchCookieApi } = require("../zaoCookiePatcher");
 
+// ── Tier persistence helpers ─────────────────────────────────────────────────
+// Store the last-active tier to disk so restarts resume from the right account
+// instead of always falling back to Tier 1.
+const TIER_PERSIST_FILE = join(process.cwd(), "data", "active-tier.json");
+
+function readPersistedTier() {
+  try {
+    if (!existsSync(TIER_PERSIST_FILE)) return 1;
+    const raw  = require("fs").readFileSync(TIER_PERSIST_FILE, "utf-8").trim();
+    const data = JSON.parse(raw);
+    const t    = parseInt(data && data.tier, 10);
+    if (t >= 1 && t <= 3) return t;
+  } catch (_) {}
+  return 1;
+}
+
+function writePersistedTier(tier) {
+  try {
+    require("fs-extra").ensureDirSync(require("path").dirname(TIER_PERSIST_FILE));
+    writeFileSync(TIER_PERSIST_FILE, JSON.stringify({ tier, ts: new Date().toISOString() }, null, 2), "utf-8");
+  } catch (_) {}
+}
+
 /**
  * ZAO Multi-Account Login Module
  * ================================
@@ -134,7 +157,23 @@ module.exports = async function multiAccountLogin({ FCAOption = {}, email, passw
   const configEmail    = email    || process.env.FB_EMAIL    || global.config?.EMAIL;
   const configPassword = password || process.env.FB_PASSWORD || global.config?.PASSWORD;
 
-  for (const tierInfo of TIERS) {
+  // ── Tier persistence: resume from the last-active tier if known ──────────
+  // On crash+restart the watchdog restores Tier 1 cookies, but if the active
+  // tier at crash time was 2 or 3 we start there to avoid re-triggering with
+  // a known-restricted Tier 1 account.
+  const persistedTier = readPersistedTier();
+  if (persistedTier > 1) {
+    console.log(`[ Login ]: Persisted tier = ${persistedTier} — starting login loop from Tier ${persistedTier}.`);
+  }
+
+  // Build an ordered list: [persistedTier, persistedTier+1, ..., 3, 1, 2, ..., persistedTier-1]
+  // This ensures we always try the last-known-good tier first, then advance, then wrap around.
+  const tiersOrdered = [];
+  for (let i = 0; i < TIERS.length; i++) {
+    tiersOrdered.push(TIERS[(persistedTier - 1 + i) % TIERS.length]);
+  }
+
+  for (const tierInfo of tiersOrdered) {
     const { tier, stateFile, altFile, credsFile } = tierInfo;
     const stateFullPath = join(cwd, stateFile);
     const altFullPath   = join(cwd, altFile);
@@ -143,18 +182,22 @@ module.exports = async function multiAccountLogin({ FCAOption = {}, email, passw
 
     console.log(`[ Login ]: ── Trying ${label} (${stateFile}) ──`);
 
+    // helper: record success for this tier
+    function _recordSuccess(api, method) {
+      saveState(stateFullPath, altFullPath, api.getAppState ? api.getAppState() : []);
+      global.loginMethod       = method;
+      global.activeAccountTier = tier;
+      global.activeStateFile   = stateFullPath;
+      global.activeAltFile     = altFullPath;
+      writePersistedTier(tier);
+      return patchCookieApi(api, { tier, stateFile: stateFullPath, altFile: altFullPath, loginMethod: method });
+    }
+
     // ── 1. Try main state file ──────────────────────────────────────
     let result = await tryLoginWithFile(stateFullPath, loginOptions, `${label}/${stateFile}`);
 
     if (result) {
-      saveState(stateFullPath, altFullPath, result.appState);
-      global.loginMethod       = "appstate";
-      global.activeAccountTier = tier;
-      global.activeStateFile   = stateFullPath;
-      global.activeAltFile     = altFullPath;
-      const api = patchCookieApi(result.api, {
-        tier, stateFile: stateFullPath, altFile: altFullPath, loginMethod: "appstate"
-      });
+      const api = _recordSuccess(result.api, "appstate");
       console.log(`[ Login ]: Active account — ${label} via ${stateFile} ✓`);
       return api;
     }
@@ -165,14 +208,7 @@ module.exports = async function multiAccountLogin({ FCAOption = {}, email, passw
       result = await tryLoginWithFile(altFullPath, loginOptions, `${label}/${altFile}`);
 
       if (result) {
-        saveState(stateFullPath, altFullPath, result.appState);
-        global.loginMethod       = "appstate";
-        global.activeAccountTier = tier;
-        global.activeStateFile   = stateFullPath;
-        global.activeAltFile     = altFullPath;
-        const api = patchCookieApi(result.api, {
-          tier, stateFile: stateFullPath, altFile: altFullPath, loginMethod: "appstate-alt"
-        });
+        const api = _recordSuccess(result.api, "appstate-alt");
         console.log(`[ Login ]: Active account — ${label} via ${altFile} (alt) ✓`);
         return api;
       }
@@ -185,14 +221,7 @@ module.exports = async function multiAccountLogin({ FCAOption = {}, email, passw
       result = await tryLoginWithCredentials(fileCreds.email, fileCreds.password, loginOptions, `${label}/${credsFile}`);
 
       if (result) {
-        saveState(stateFullPath, altFullPath, result.appState);
-        global.loginMethod       = "credentials";
-        global.activeAccountTier = tier;
-        global.activeStateFile   = stateFullPath;
-        global.activeAltFile     = altFullPath;
-        const api = patchCookieApi(result.api, {
-          tier, stateFile: stateFullPath, altFile: altFullPath, loginMethod: "credentials"
-        });
+        const api = _recordSuccess(result.api, "credentials");
         console.log(`[ Login ]: Active account — ${label} via ${credsFile} ✓`);
         return api;
       }
@@ -204,14 +233,7 @@ module.exports = async function multiAccountLogin({ FCAOption = {}, email, passw
       result = await tryLoginWithCredentials(configEmail, configPassword, loginOptions, `${label}/config`);
 
       if (result) {
-        saveState(stateFullPath, altFullPath, result.appState);
-        global.loginMethod       = "credentials";
-        global.activeAccountTier = tier;
-        global.activeStateFile   = stateFullPath;
-        global.activeAltFile     = altFullPath;
-        const api = patchCookieApi(result.api, {
-          tier, stateFile: stateFullPath, altFile: altFullPath, loginMethod: "credentials"
-        });
+        const api = _recordSuccess(result.api, "credentials");
         console.log(`[ Login ]: Active account — Tier 1 via ZAO-SETTINGS.json credentials ✓`);
         return api;
       }
@@ -219,6 +241,9 @@ module.exports = async function multiAccountLogin({ FCAOption = {}, email, passw
 
     console.log(`[ Login ]: ${label} — all methods failed, moving to next tier...`);
   }
+
+  // All tiers exhausted — clear the persisted tier so next restart tries Tier 1 fresh
+  writePersistedTier(1);
 
   // All tiers exhausted
   console.error(

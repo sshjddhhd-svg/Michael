@@ -29,7 +29,7 @@ Do not propose follow-ups that overlap with tasks already visible in the project
 
 Do not propose follow-ups for agent housekeeping (e.g. updating replit.md, adding comments, improving documentation) — handle those inline as part of your current task.
 
-Only call `proposeFollowUpTasks` once per task. If you need to adjust follow-ups after proposing (e.g. after a validation retry or user-requested changes), favor using `updateProjectTask` to update their titles or descriptions. If a proposed follow-up is now completely obsolete, call `markFollowUpTaskObsolete` to remove it.
+Only call `proposeFollowUpTasks` once per task — the system enforces this and will reject duplicate calls. If you have done more work on the task and are marking it complete again, review your previously proposed follow-ups. If any are now stale or no longer relevant given the new work, call `markFollowUpTaskObsolete` to remove them.
 
 ## Examples
 
